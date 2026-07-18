@@ -4,6 +4,42 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+class ProjectVitaeError(Exception):
+    ...
+
+
+class ConfigError(ProjectVitaeError):
+    ...
+
+
+class TemplateError(ProjectVitaeError):
+    ...
+
+
+class SessionLockError(ProjectVitaeError):
+    ...
+
+
+class PromptError(ProjectVitaeError):
+    ...
+
+
+class LLMCallError(ProjectVitaeError):
+    ...
+
+
+class CheckpointerError(ProjectVitaeError):
+    ...
+
+
+class CostCapReached(ProjectVitaeError):
+    ...
+
+
+class TokenBudgetExceeded(ProjectVitaeError):
+    ...
+
+
 class ProjectRecord(BaseModel):
     title: str
     summary: str
@@ -12,12 +48,32 @@ class ProjectRecord(BaseModel):
     low_confidence: bool = False
 
 
+class ExplorationResult(BaseModel):
+    action: Literal["new", "update"]
+    matched_project: str | None = None
+    title: str
+    summary: str
+    tags: list[str]
+    low_confidence: bool = False
+
+
+class FilterResult(BaseModel):
+    selected: list[str]
+    rationale: str
+
+
+class WritingResult(BaseModel):
+    section_id: str
+    content: str
+    rationale: str
+
+
 class SectionVersion(BaseModel):
     content: str
     feedback_used: str | None = None
-    timestamp: datetime = Field(default_factory=datetime.now)
+    timestamp: datetime
     model: str | None = None
-    provider: str = ""
+    provider: str
     prompt_version: str | None = None
     temperature: float | None = None
     max_tokens: int | None = None
@@ -43,26 +99,6 @@ class Issue(BaseModel):
     phase: Literal["content", "compile"]
 
 
-class ExplorationResult(BaseModel):
-    action: Literal["new", "update"]
-    matched_project: str | None = None
-    title: str
-    summary: str
-    tags: list[str]
-    low_confidence: bool = False
-
-
-class FilterResult(BaseModel):
-    selected: list[str]
-    rationale: str
-
-
-class WritingResult(BaseModel):
-    section_id: str
-    content: str
-    rationale: str
-
-
 class CritiqueResult(BaseModel):
     issues: list[Issue]
 
@@ -73,3 +109,29 @@ class SessionState(BaseModel):
     sections: list[ResumeSection] = Field(default_factory=list)
     open_issues: list[Issue] = Field(default_factory=list)
     skipped_repos: list[str] = Field(default_factory=list)
+    cost_running_usd: float = 0.0
+    session_name: str = ""
+    prompts_version: dict[str, str] = Field(default_factory=dict)
+    github_urls: list[str] = Field(default_factory=list)
+    clones_dir: str = ""
+    clone_dirs: list[str] = Field(default_factory=list)
+    exploration_warnings: list[dict] = Field(default_factory=list)
+    current_repo_url: str | None = None
+    current_exploration: ExplorationResult | None = None
+    filter_proposal: FilterResult | None = None
+    current_section_kind: Literal["experience", "education", "skills", "summary", None] = None
+    current_feedback: str | None = None
+    generated_sections_cache: dict[str, str] = Field(default_factory=dict)
+    latex_compiler: str | None = None
+    final_pdf: str | None = None
+
+
+class LLMCallRecord(BaseModel):
+    timestamp: datetime
+    subagent: str
+    model: str
+    input_tokens: int
+    output_tokens: int
+    cost: float
+    duration_ms: int
+    prompt_version: str

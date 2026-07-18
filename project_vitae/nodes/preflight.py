@@ -1,51 +1,45 @@
-from __future__ import annotations
-
 import logging
 import os
-import shutil
-from pathlib import Path
 
-from project_vitae.config import AppConfig
-from project_vitae.latex_utils import validate_placeholders
+from project_vitae.config import Config
+from project_vitae.io_utils import userprofile_path
+from project_vitae.latex_utils import detect_compiler, validate_template_placeholders
+from project_vitae.models import ConfigError, SessionState, TemplateError
 
 logger = logging.getLogger(__name__)
 
 
-def run_preflight(config: AppConfig, userprofile_dir: Path) -> None:
-    errors: list[str] = []
+def make_preflight(cfg: Config):
+    def preflight(state: SessionState) -> dict:
+        for name in cfg.subagents:
+            env_var = cfg.subagent(name).api_key_env
+            if not os.environ.get(env_var):
+                raise ConfigError(f"environment variable '{env_var}' not set for subagent '{name}'")
 
-    template_path = userprofile_dir / config.latex.template_path
-    if not template_path.exists():
-        errors.append(f"Template not found at '{template_path}'")
-    else:
-        template_text = template_path.read_text(encoding="utf-8")
-        missing = validate_placeholders(template_text)
+        template_rel = cfg.latex.template_path
+        template_path = userprofile_path([template_rel])
+        if not template_path.is_file():
+            raise TemplateError(
+                f"template not found at {template_path}; "
+                f"copy template.example.tex to {template_rel}"
+            )
+
+        text = template_path.read_text(encoding="utf-8")
+        missing, unknown = validate_template_placeholders(text)
         if missing:
-            errors.append(
-                f"Template missing required placeholders: {', '.join(missing)}"
-            )
+            raise TemplateError(f"missing required placeholders in template: {', '.join(sorted(missing))}")
+        if unknown:
+            logger.warning("unknown placeholders in template (will pass through): %s", unknown)
 
-    for name, sa in config.subagents.items():
-        if not os.environ.get(sa.api_key_env):
-            errors.append(
-                f"Environment variable '{sa.api_key_env}' (subagent '{name}') not set"
-            )
+        compiler = cfg.latex.compiler
+        if compiler == "auto":
+            compiler = detect_compiler()
+        else:
+            try:
+                detect_compiler()
+            except TemplateError:
+                raise TemplateError(f"specified compiler '{compiler}' not found on PATH")
 
-    compiler = _detect_latex_compiler()
-    if compiler is None:
-        errors.append(
-            "No LaTeX compiler found. Install tectonic or pdflatex."
-        )
+        return {"latex_compiler": compiler}
 
-    if errors:
-        raise RuntimeError("Pre-flight checks failed:\n" + "\n".join(errors))
-
-    logger.info("Pre-flight checks passed. LaTeX compiler: %s", compiler)
-
-
-def _detect_latex_compiler() -> str | None:
-    if shutil.which("tectonic"):
-        return "tectonic"
-    if shutil.which("pdflatex"):
-        return "pdflatex"
-    return None
+    return preflight

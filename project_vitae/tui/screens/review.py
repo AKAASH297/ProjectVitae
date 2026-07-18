@@ -1,67 +1,55 @@
-from __future__ import annotations
-
-from textual.app import ComposeResult
-from textual.containers import Container, Horizontal, Vertical
+from textual import on
 from textual.screen import Screen
-from textual.widgets import Button, Label, ListView, ListItem, TextArea, Header, Footer, Static
+from textual.widgets import Button, Header, Input, Label, ListView, Static, TextArea
 
-from project_vitae.models import ResumeSection, SessionState
+from langgraph.types import Command
+
+from project_vitae.graph import resume_graph
 
 
 class ReviewScreen(Screen):
-    def __init__(self, session_state: SessionState):
-        super().__init__()
-        self.session_state = session_state
-        self._current_section_idx = 0
+    def __init__(self, payload: dict, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.payload = payload
 
-    def compose(self) -> ComposeResult:
+    def compose(self):
         yield Header()
-        yield Container(
-            Label("Review Sections", classes="title"),
-            ListView(id="section_list"),
-            Static(id="section_preview"),
-            Horizontal(
-                Button("Approve", id="approve", variant="success"),
-                Button("Regenerate", id="regenerate", variant="primary"),
-                Button("Manual Edit", id="edit", variant="default"),
-                Button("Diff", id="diff", variant="default"),
-            ),
-            TextArea(id="feedback_input", text="", classes="hidden"),
-            Button("Continue", id="continue", variant="primary"),
-            id="main_container",
-        )
-        yield Footer()
+        yield Static("## Section Review", id="title")
+        sections = self.payload.get("sections", [])
+        for sec in sections:
+            sid = sec.get("id", "?")
+            kind = sec.get("kind", "?")
+            status = sec.get("status", "draft")
+            yield Label(f"{kind} ({sid}) — {status}")
+            yield Button(f"Approve {sid}", id=f"approve_{sid}", variant="success")
+            yield Button(f"Regenerate {sid}", id=f"regen_{sid}")
+        yield Button("Proceed to Export", id="proceed", variant="primary")
 
-    def on_mount(self) -> None:
-        self._render_list()
+    @on(Button.Pressed)
+    def on_button(self, event):
+        button_id = event.button.id or ""
 
-    def _render_list(self) -> None:
-        list_view = self.query_one("#section_list", ListView)
-        list_view.clear()
-        for sec in self.session_state.sections:
-            status_map = {"draft": "📝", "approved": "✅", "needs_review": "⚠️"}
-            icon = status_map.get(sec.status, "📝")
-            list_view.append(ListItem(Label(f"{icon} {sec.id} ({sec.status})")))
-
-    def on_list_view_selected(self, event: ListView.Selected) -> None:
-        idx = event.list_view.children.index(event.item)
-        self._current_section_idx = idx
-        sec = self.session_state.sections[idx]
-        self.query_one("#section_preview", Static).update(sec.current.content)
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "approve":
-            self._update_status("approved")
-        elif event.button.id == "regenerate":
-            feedback = self.query_one("#feedback_input", TextArea).text
-            self.dismiss({"action": "regenerate", "section_idx": self._current_section_idx, "feedback": feedback})
-        elif event.button.id == "edit":
-            sec = self.session_state.sections[self._current_section_idx]
-            self.dismiss({"action": "edit", "section_idx": self._current_section_idx, "content": sec.current.content})
-        elif event.button.id == "continue":
-            self.dismiss({"action": "continue"})
-
-    def _update_status(self, status: str) -> None:
-        if self._current_section_idx < len(self.session_state.sections):
-            self.session_state.sections[self._current_section_idx].status = status  # type: ignore
-            self._render_list()
+        if button_id == "proceed":
+            approved_ids = [
+                s.get("id") for s in self.payload.get("sections", [])
+            ]
+            self.app.graph_iterator = resume_graph(
+                self.app.graph,
+                Command(resume={"action": "proceed", "approved_ids": approved_ids}),
+                thread_id=self.app.session_name,
+            )
+            self.app._advance_graph()
+            self.app.pop_screen()
+        elif button_id.startswith("approve_"):
+            pass
+        elif button_id.startswith("regen_"):
+            section_id = button_id.replace("regen_", "")
+            def notify_regen(feedback: str = ""):
+                self.app.graph_iterator = resume_graph(
+                    self.app.graph,
+                    Command(resume={"action": "regen", "section_id": section_id, "feedback": feedback}),
+                    thread_id=self.app.session_name,
+                )
+                self.app._advance_graph()
+                self.app.pop_screen()
+            notify_regen()

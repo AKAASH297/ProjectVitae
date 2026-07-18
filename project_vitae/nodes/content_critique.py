@@ -1,111 +1,91 @@
-from __future__ import annotations
-
 import logging
 import re
 from pathlib import Path
 
-from project_vitae.config import AppConfig
-from project_vitae.io_utils import load_prompt
-from project_vitae.llm_call import LLMCallError, llm_call
+from langchain_core.messages import HumanMessage
+from pydantic import BaseModel
+
+from project_vitae.config import Config
+from project_vitae.io_utils import USERPROFILE_DIR, slugify
+from project_vitae.llm_call import LLMCall
 from project_vitae.models import CritiqueResult, Issue, SessionState
 
 logger = logging.getLogger(__name__)
 
-CONTENT_CRITIQUE_SYSTEM_PROMPT = """You are a resume content critique agent. Review the draft resume 
-sections against the job description and identify:
-1. Missing keywords or skills from the job description
-2. Weak or vague statements
-3. Opportunities to better align content with the job requirements
 
-First compute keyword overlap, then assess semantic alignment."""
+class ContentCritiqueOutput(BaseModel):
+    issues: list[Issue]
 
 
-async def run_content_critique(
-    config: AppConfig,
-    session_dir: Path,
-    state: SessionState,
-    prompts_dir: Path,
-) -> CritiqueResult:
-    sub_cfg = config.subagents["content_critique"]
-    prompt_path = prompts_dir / sub_cfg.prompt_version
-
-    try:
-        prompt_text = load_prompt(prompt_path)
-    except FileNotFoundError:
-        prompt_text = CONTENT_CRITIQUE_SYSTEM_PROMPT
-
-    draft_content = _collect_draft_content(state)
-    keyword_issues = _deterministic_keyword_overlap(state.job_description, draft_content)
-
-    user_prompt = _build_critique_prompt(state.job_description, draft_content, keyword_issues)
-
-    result, raw = await llm_call(
-        subagent_name="content_critique",
-        subagent_cfg=sub_cfg,
-        app_cfg=config,
-        system_prompt=prompt_text,
-        user_prompt=user_prompt,
-        session_dir=session_dir,
-        running_cost=0.0,
-        cost_cap=config.cost.per_session_cap_usd,
-        output_model=CritiqueResult,
+def _keyword_overlap(jd: str, section_text: str) -> list[Issue]:
+    jd_terms = set(
+        w.lower()
+        for w in re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}", jd or "")
     )
-
-    if isinstance(raw, CritiqueResult):
-        combined = keyword_issues + raw.issues
-        return CritiqueResult(issues=combined)
-    raise LLMCallError("Content Critique subagent did not return structured output", recoverable=False)
-
-
-def _deterministic_keyword_overlap(jd: str, draft: str) -> list[Issue]:
-    jd_lower = jd.lower()
-    draft_lower = draft.lower()
-    words = set(re.findall(r"[a-z]+(?:[-/][a-z]+)*", jd_lower))
-    stopwords = {
-        "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
-        "of", "with", "by", "is", "are", "was", "were", "be", "been", "being",
-        "have", "has", "had", "do", "does", "did", "will", "would", "could",
-        "should", "may", "might", "shall", "can", "must", "need", "this",
-        "that", "these", "those", "it", "its", "we", "you", "they", "them",
-        "their", "our", "not", "no", "nor",
-    }
-    meaningful = words - stopwords
-    found = {w for w in meaningful if w in draft_lower}
-    missing = meaningful - found
-    issues = []
-    for word in sorted(missing):
-        issues.append(
-            Issue(
+    if not jd_terms:
+        return []
+    text_lower = section_text.lower()
+    missing: list[Issue] = []
+    for term in sorted(jd_terms):
+        if term not in text_lower:
+            missing.append(Issue(
                 location="global",
                 kind="content_keyword",
-                note=f"Keyword '{word}' from job description not found in draft",
-                keyword_match=True,
+                note=f"JD term '{term}' not found in draft content",
+                keyword_match=False,
                 phase="content",
-            )
+            ))
+    return missing
+
+
+def make_content_critique(cfg: Config):
+    def content_critique(state: SessionState) -> dict:
+        session_name = state.session_name or "default"
+        session_dir = USERPROFILE_DIR / "sessions" / slugify(session_name)
+        jd = state.job_description or ""
+
+        all_keyword_issues: list[Issue] = []
+        combined_draft = ""
+        for sec in state.sections:
+            if sec.versions:
+                combined_draft += f"\n### {sec.kind}\n{sec.current.content}\n"
+
+        all_keyword_issues = _keyword_overlap(jd, combined_draft)
+
+        user_message = (
+            f"Job Description:\n{jd}\n\n"
+            f"Draft Resume Content:\n{combined_draft}\n\n"
+            "A pre-computed keyword-coverage list is available below. "
+            "Do NOT modify those entries. Add only semantic-match issues: "
+            "tone, alignment, exaggeration, missing context.\n"
+            "Output ContentCritiqueOutput with issues (phase=content)."
         )
-    return issues
 
+        llm_call = LLMCall(
+            subagent_name="content_critique",
+            cfg=cfg.subagent("content_critique"),
+            session_dir=session_dir,
+            output_schema=ContentCritiqueOutput,
+            cost_guard=None,
+            retry_cfg=cfg.retry,
+            config=cfg,
+        )
 
-def _collect_draft_content(state: SessionState) -> str:
-    parts = []
-    for section in state.sections:
-        parts.append(f"[{section.id}]\n{section.current.content}")
-    return "\n\n".join(parts)
+        result = llm_call.invoke([HumanMessage(content=user_message)])
+        semantic_issues: list[Issue] = result.output.issues
 
+        merged = all_keyword_issues + semantic_issues
 
-def _build_critique_prompt(jd: str, draft: str, keyword_issues: list[Issue]) -> str:
-    kw_lines = "\n".join(f"- {i.note}" for i in keyword_issues)
-    return f"""Job Description:
-{jd}
+        sections = list(state.sections)
+        for sec in sections:
+            for iss in merged:
+                if iss.location == sec.id or iss.location == "global":
+                    if sec.status == "approved":
+                        sec.status = "needs_review"
 
-Current Draft Content:
-{draft}
+        return {
+            "open_issues": merged,
+            "sections": sections,
+        }
 
-Deterministic keyword overlap issues found:
-{kw_lines if keyword_issues else "None detected"}
-
-Please also perform a semantic match assessment and identify any additional issues with:
-- Weak or vague statements
-- Missing alignment with job requirements
-- Opportunities for improvement
-"""
+    return content_critique

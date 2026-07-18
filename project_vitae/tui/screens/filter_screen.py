@@ -1,45 +1,35 @@
-from __future__ import annotations
-
-from typing import Any
-
-from textual.app import ComposeResult
-from textual.containers import Container, Horizontal, Vertical
+from textual import on
 from textual.screen import Screen
-from textual.widgets import Button, Label, ListView, ListItem, Static, Header, Footer
+from textual.widgets import Button, Header, Label, ListView, Static
 
-from project_vitae.models import FilterResult, ProjectRecord
+from langgraph.types import Command
 
 
 class FilterScreen(Screen):
-    def __init__(self, filter_result: FilterResult, projects: list[ProjectRecord]):
-        super().__init__()
-        self.filter_result = filter_result
-        self.projects = projects
+    def __init__(self, payload: dict, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.payload = payload
 
-    def compose(self) -> ComposeResult:
+    def compose(self):
         yield Header()
-        yield Container(
-            Label("Filter Results", classes="title"),
-            Static(self.filter_result.rationale, id="rationale"),
-            Label("Selected Projects:", classes="section_label"),
-            ListView(id="project_list"),
-            Horizontal(
-                Button("Confirm & Continue", id="confirm", variant="success"),
-                Button("Go Back", id="back", variant="primary"),
-            ),
-            id="main_container",
+        yield Static("## Filter Results", id="title")
+        yield Label(f"Selected: {', '.join(self.payload.get('selected', []))}")
+        yield Label(f"Rationale: {self.payload.get('rationale', '')}")
+        yield Button("Confirm & Continue", id="confirm", variant="primary")
+        yield Button("Reject", id="reject", variant="error")
+
+    @on(Button.Pressed, "#confirm")
+    def on_confirm(self):
+        from project_vitae.graph import resume_graph
+        self.app.graph_iterator = resume_graph(
+            self.app.graph,
+            Command(resume={"action": "confirm", "selected": self.payload.get("selected", [])}),
+            thread_id=self.app.session_name,
         )
-        yield Footer()
+        self.app._advance_graph()
+        self.app.pop_screen()
 
-    def on_mount(self) -> None:
-        list_view = self.query_one("#project_list", ListView)
-        for p in self.projects:
-            warning = " ⚠️" if p.low_confidence else ""
-            icon = "✅" if p.title in self.filter_result.selected else "❌"
-            list_view.append(ListItem(Label(f"{icon} {p.title}{warning}")))
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "confirm":
-            self.dismiss({"action": "continue"})
-        elif event.button.id == "back":
-            self.dismiss({"action": "back"})
+    @on(Button.Pressed, "#reject")
+    def on_reject(self):
+        self.notify("Pipeline aborted", severity="error")
+        self.app.pop_screen()

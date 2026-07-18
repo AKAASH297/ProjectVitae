@@ -1,13 +1,14 @@
-from __future__ import annotations
-
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
-from project_vitae.config import AppConfig
-from project_vitae.io_utils import load_prompt, read_text
-from project_vitae.llm_call import LLMCallError, llm_call
+from langchain_core.messages import HumanMessage
+
+from project_vitae.config import Config
+from project_vitae.io_utils import USERPROFILE_DIR, load_project_records, read_text, slugify
+from project_vitae.llm_call import LLMCall
 from project_vitae.models import (
-    ProjectRecord,
     ResumeSection,
     SectionVersion,
     SessionState,
@@ -16,70 +17,101 @@ from project_vitae.models import (
 
 logger = logging.getLogger(__name__)
 
-WRITING_SYSTEM_PROMPT = """You are an expert resume writer. Given project information, 
-user information, and a job description, write a compelling resume section. 
-Be specific, use active language, and highlight achievements and impact."""
-
-SECTION_ORDER = ["experience", "education", "skills", "summary"]
+SECTION_ORDER: list[Literal["experience", "education", "skills", "summary"]] = [
+    "experience", "education", "skills", "summary",
+]
 
 
-async def write_section(
-    kind: str,
-    config: AppConfig,
-    session_dir: Path,
-    state: SessionState,
-    projects: list[ProjectRecord],
-    userinfo_text: str,
-    prompts_dir: Path,
-    feedback: str | None = None,
-) -> WritingResult:
-    sub_cfg = config.subagents["writing"]
-    prompt_path = prompts_dir / sub_cfg.prompt_version
-    try:
-        prompt_text = load_prompt(prompt_path)
-    except FileNotFoundError:
-        prompt_text = WRITING_SYSTEM_PROMPT
+def make_writing(cfg: Config, section_kind: Literal["experience", "education", "skills", "summary"]):
+    def writing_node(state: SessionState) -> dict:
+        session_name = state.session_name or "default"
+        session_dir = USERPROFILE_DIR / "sessions" / slugify(session_name)
 
-    user_prompt = _build_writing_prompt(
-        kind, state.job_description, projects, userinfo_text, feedback
-    )
+        selected_titles = state.selected_projects
+        records = [r for r in load_project_records() if r.title in selected_titles]
 
-    result, raw = await llm_call(
-        subagent_name=f"writing_{kind}",
-        subagent_cfg=sub_cfg,
-        app_cfg=config,
-        system_prompt=prompt_text,
-        user_prompt=user_prompt,
-        session_dir=session_dir,
-        running_cost=0.0,
-        cost_cap=config.cost.per_session_cap_usd,
-        output_model=WritingResult,
-    )
+        jd = state.job_description or "(not provided)"
 
-    if isinstance(raw, WritingResult):
-        return raw
-    raise LLMCallError("Writing subagent did not return structured output", recoverable=False)
+        try:
+            userinfo_path = USERPROFILE_DIR / "userinfo.md"
+            userinfo = read_text(userinfo_path) if userinfo_path.is_file() else "No userinfo available."
+        except Exception:
+            userinfo = "Error reading userinfo."
 
+        cache = state.generated_sections_cache
+        earlier_content = ""
+        for k in SECTION_ORDER:
+            if k == section_kind:
+                break
+            if k in cache:
+                earlier_content += f"\n### {k}\n{cache[k]}\n"
 
-def _build_writing_prompt(
-    kind: str, jd: str, projects: list[ProjectRecord], userinfo: str, feedback: str | None
-) -> str:
-    project_lines = []
-    for p in projects:
-        project_lines.append(f"- {p.title}: {p.summary} (tags: {', '.join(p.tags)})")
+        feedback = state.current_feedback or ""
+        prev_content = ""
+        for sec in state.sections:
+            if sec.kind == section_kind and sec.versions:
+                prev_content = sec.current.content
 
-    parts = [
-        f"Section kind: {kind}",
-        f"Job Description:\n{jd}",
-        f"User Information:\n{userinfo}",
-        f"Selected Projects:\n" + "\n".join(project_lines),
-    ]
-    if feedback:
-        parts.append(f"User Feedback (incorporate this):\n{feedback}")
+        user_message = (
+            f"Write the '{section_kind}' section of a resume.\n\n"
+            f"Job Description:\n{jd}\n\n"
+            f"User Info:\n{userinfo}\n\n"
+            f"Selected Projects:\n"
+            + "\n".join(f"- {r.title}: {r.summary} (tags: {', '.join(r.tags)})" for r in records)
+            + f"\n\nEarlier Sections:\n{earlier_content}\n"
+            + (f"\nFeedback: {feedback}\n" if feedback else "")
+            + (f"\nPrevious Version:\n{prev_content}\n" if prev_content else "")
+            + "\nOutput WritingResult with section_id, content, and rationale."
+        )
 
-    parts.append(
-        f"\nWrite the '{kind}' section of a resume. "
-        "Return a section_id (e.g. 'experience', 'education'), the section content in plain text, "
-        "and a short rationale for your choices."
-    )
-    return "\n\n".join(parts)
+        llm_call = LLMCall(
+            subagent_name="writing",
+            cfg=cfg.subagent("writing"),
+            session_dir=session_dir,
+            output_schema=WritingResult,
+            cost_guard=None,
+            retry_cfg=cfg.retry,
+            config=cfg,
+        )
+
+        result = llm_call.invoke([HumanMessage(content=user_message)])
+        writing_result: WritingResult = result.output
+
+        version = SectionVersion(
+            content=writing_result.content,
+            timestamp=datetime.now(timezone.utc),
+            model=cfg.subagent("writing").model,
+            provider=cfg.subagent("writing").provider,
+            prompt_version=cfg.subagent("writing").prompt_version,
+            temperature=cfg.subagent("writing").temperature,
+            max_tokens=cfg.subagent("writing").max_tokens,
+            cost_estimate=result.cost,
+            feedback_used=feedback if feedback else None,
+        )
+
+        sections = list(state.sections)
+        found = False
+        for i, sec in enumerate(sections):
+            if sec.kind == section_kind:
+                sections[i].versions.append(version)
+                sections[i].status = "draft"
+                found = True
+                break
+        if not found:
+            sections.append(ResumeSection(
+                id=f"{section_kind}_{len(sections)}",
+                kind=section_kind,
+                versions=[version],
+            ))
+
+        cache = dict(state.generated_sections_cache)
+        cache[section_kind] = writing_result.content
+
+        return {
+            "sections": sections,
+            "generated_sections_cache": cache,
+            "current_section_kind": None,
+            "current_feedback": None,
+        }
+
+    return writing_node

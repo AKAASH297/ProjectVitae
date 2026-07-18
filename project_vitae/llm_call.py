@@ -1,166 +1,216 @@
-from __future__ import annotations
-
 import json
 import logging
+import os
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_anthropic import ChatAnthropic
-from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel
 
-from project_vitae.config import AppConfig, SubagentConfig
-from project_vitae.cost import estimate_cost
+from project_vitae.config import Config, RetryConfig, SubagentConfig
+from project_vitae.cost import CostGuard, compute_cost
+from project_vitae.models import (
+    LLMCallError,
+    LLMCallRecord,
+    TokenBudgetExceeded,
+)
+from project_vitae.prompts import resolve_prompt
 
 logger = logging.getLogger(__name__)
 
-
-def _build_model(config: SubagentConfig) -> BaseChatModel:
-    kwargs: dict[str, Any] = {
-        "model": config.model,
-        "temperature": config.temperature,
-        "max_tokens": config.max_tokens,
-    }
-    if config.base_url:
-        kwargs["base_url"] = config.base_url
-    if config.provider == "anthropic":
-        return ChatAnthropic(**kwargs)
-    return ChatOpenAI(**kwargs)
+_jsonl_lock = threading.Lock()
 
 
-RECOVERABLE = {429, 500, 502, 503, 504}
+class LLMCallResult:
+    def __init__(
+        self,
+        output: BaseModel,
+        input_tokens: int,
+        output_tokens: int,
+        cost: float,
+        duration_ms: int,
+        model: str,
+        prompt_version: str,
+    ):
+        self.output = output
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+        self.cost = cost
+        self.duration_ms = duration_ms
+        self.model = model
+        self.prompt_version = prompt_version
 
 
-class LLMResult(BaseModel):
-    content: str
-    input_tokens: int
-    output_tokens: int
-    cost: float
-    duration_ms: int
-    prompt_version: str
-    model: str
+class LLMCall:
+    def __init__(
+        self,
+        subagent_name: str,
+        cfg: SubagentConfig,
+        session_dir: Path,
+        output_schema: type[BaseModel],
+        cost_guard: CostGuard,
+        retry_cfg: RetryConfig | None = None,
+        budget_accumulator: list[int] | None = None,
+        budget_limit: int | None = None,
+        config: Config | None = None,
+    ):
+        self.subagent_name = subagent_name
+        self.cfg = cfg
+        self.session_dir = session_dir
+        self.output_schema = output_schema
+        self.cost_guard = cost_guard
+        self.retry_cfg = retry_cfg or RetryConfig()
+        self.budget_accumulator = budget_accumulator
+        self.budget_limit = budget_limit
+        self.config = config
 
+    def invoke(self, messages: list[BaseMessage], prompt_override: str | None = None) -> LLMCallResult:
+        prompt_version = self.cfg.prompt_version
+        system_prompt = prompt_override or resolve_prompt(self.subagent_name, self.cfg)
+        full_messages: list[BaseMessage] = [SystemMessage(content=system_prompt), *messages]
 
-class LLMCallError(Exception):
-    def __init__(self, message: str, recoverable: bool = True):
-        super().__init__(message)
-        self.recoverable = recoverable
+        model_instance = self._build_model()
 
+        structured = model_instance.with_structured_output(self.output_schema)
 
-async def llm_call(
-    subagent_name: str,
-    subagent_cfg: SubagentConfig,
-    app_cfg: AppConfig,
-    system_prompt: str,
-    user_prompt: str,
-    session_dir: Path,
-    running_cost: float,
-    cost_cap: float,
-    output_model: type[BaseModel] | None = None,
-) -> tuple[LLMResult, BaseModel | str]:
-    if running_cost >= cost_cap:
-        raise LLMCallError(
-            f"Cost cap ${cost_cap:.2f} exceeded (running: ${running_cost:.2f})",
-            recoverable=False,
-        )
+        last_error: Exception | None = None
+        for attempt in range(1, self.retry_cfg.max_attempts + 1):
+            start = time.monotonic()
+            try:
+                response = structured.invoke(full_messages)
+                duration_ms = int((time.monotonic() - start) * 1000)
+            except Exception as e:
+                duration_ms = int((time.monotonic() - start) * 1000)
+                if self._is_recoverable(e):
+                    if attempt < self.retry_cfg.max_attempts:
+                        backoff = self.retry_cfg.backoff_seconds[attempt - 1] if attempt - 1 < len(self.retry_cfg.backoff_seconds) else self.retry_cfg.backoff_seconds[-1]
+                        logger.warning(
+                            "LLM call %s attempt %d failed (%s), retrying in %ds",
+                            self.subagent_name, attempt, e, backoff,
+                        )
+                        time.sleep(backoff)
+                        last_error = e
+                        continue
+                    else:
+                        raise LLMCallError(f"{self.subagent_name} exhausted retries: {e}") from e
+                else:
+                    raise LLMCallError(f"{self.subagent_name} non-recoverable error: {e}") from e
 
-    model = _build_model(subagent_cfg)
-    prompt_version = subagent_cfg.prompt_version
+            if not isinstance(response, self.output_schema):
+                raise LLMCallError(
+                    f"expected {self.output_schema.__name__}, got {type(response).__name__}"
+                )
 
-    messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
+            usage = self._extract_usage(response)
+            input_tokens = usage.get("input_tokens", 0)
+            output_tokens = usage.get("output_tokens", 0)
 
-    started = time.monotonic()
-    input_tokens_total = 0
-    output_tokens_total = 0
+            if self.budget_limit is not None and self.budget_accumulator is not None:
+                self.budget_accumulator[0] += input_tokens + output_tokens
+                if self.budget_accumulator[0] > self.budget_limit:
+                    raise TokenBudgetExceeded(
+                        f"{self.subagent_name} token budget of {self.budget_limit} "
+                        f"exceeded (used: {self.budget_accumulator[0]})"
+                    )
 
-    for attempt in range(1, app_cfg.retry.max_attempts + 1):
-        try:
-            if output_model:
-                structured = model.with_structured_output(output_model)
-                result = await structured.ainvoke(messages)
-                content = result.model_dump_json()
-                raw = result
-            else:
-                result = await model.ainvoke(messages)
-                content = result.content if hasattr(result, "content") else str(result)
-                raw = content
-
-            usage = {}
-            if hasattr(result, "usage_metadata") and result.usage_metadata:
-                usage = result.usage_metadata
-            elif hasattr(result, "response_metadata") and result.response_metadata:
-                usage = result.response_metadata
-
-            input_tokens = usage.get("input_tokens", 0) or 0
-            output_tokens = usage.get("output_tokens", 0) or 0
-
-            duration = int((time.monotonic() - started) * 1000)
-
-            usd_cost = estimate_cost(
-                subagent_cfg.model,
-                input_tokens,
-                output_tokens,
-                app_cfg.cost.pricing_overrides,
+            cost = compute_cost(
+                self.cfg.model, input_tokens, output_tokens,
+                overrides=self.config.cost.pricing_overrides if self.config else None,
             )
+            self.cost_guard.spend(cost, was_llm=True)
 
-            llm_result = LLMResult(
-                content=content,
+            record = LLMCallRecord(
+                timestamp=datetime.now(timezone.utc),
+                subagent=self.subagent_name,
+                model=self.cfg.model,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
-                cost=usd_cost,
-                duration_ms=duration,
+                cost=cost,
+                duration_ms=duration_ms,
                 prompt_version=prompt_version,
-                model=subagent_cfg.model,
+            )
+            self._append_jsonl(record)
+
+            return LLMCallResult(
+                output=response,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cost=cost,
+                duration_ms=duration_ms,
+                model=self.cfg.model,
+                prompt_version=prompt_version,
             )
 
-            log_entry = {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "subagent": subagent_name,
-                "model": subagent_cfg.model,
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "cost": usd_cost,
-                "duration_ms": duration,
-                "prompt_version": prompt_version,
-            }
-            _append_llm_log(session_dir, log_entry)
+        raise LLMCallError(f"{self.subagent_name} failed after {self.retry_cfg.max_attempts} attempts: {last_error}")
 
-            return llm_result, raw
+    def _build_model(self) -> Any:
+        api_key = os.environ.get(self.cfg.api_key_env)
+        if not api_key:
+            raise LLMCallError(f"API key env '{self.cfg.api_key_env}' not set for {self.subagent_name}")
+        kwargs = {
+            "model": self.cfg.model,
+            "temperature": self.cfg.temperature,
+            "max_tokens": self.cfg.max_tokens,
+        }
+        if self.cfg.provider == "anthropic":
+            kwargs["api_key"] = api_key
+            if self.cfg.base_url:
+                kwargs["base_url"] = self.cfg.base_url
+            return ChatAnthropic(**kwargs)
+        elif self.cfg.provider == "openai_compatible":
+            kwargs["api_key"] = api_key
+            if self.cfg.base_url:
+                kwargs["base_url"] = self.cfg.base_url
+            else:
+                kwargs["base_url"] = "https://api.openai.com/v1"
+            return ChatOpenAI(**kwargs)
+        else:
+            raise LLMCallError(f"unknown provider: {self.cfg.provider}")
 
-        except Exception as exc:
-            is_recoverable = _is_recoverable(exc)
-            if not is_recoverable or attempt == app_cfg.retry.max_attempts:
-                raise LLMCallError(str(exc), recoverable=is_recoverable) from exc
-            backoff = app_cfg.retry.backoff_seconds[min(attempt - 1, len(app_cfg.retry.backoff_seconds) - 1)]
-            logger.warning(
-                "LLM call %s attempt %d failed: %s — retrying in %.1fs",
-                subagent_name, attempt, exc, backoff,
-            )
-            time.sleep(backoff)
-
-
-def _is_recoverable(exc: Exception) -> bool:
-    msg = str(exc).lower()
-    for code in RECOVERABLE:
-        if str(code) in msg:
+    def _is_recoverable(self, error: Exception) -> bool:
+        err_str = str(error).lower()
+        class_name = type(error).__name__
+        if class_name in ("RateLimitError", "InternalServerError", "APIConnectionError", "ServiceUnavailableError"):
             return True
-    if "timeout" in msg or "rate limit" in msg:
-        return True
-    if "429" in msg:
-        return True
-    if "5" in msg[:10] and any(c.isdigit() for c in msg[:10]):
-        for code in {500, 502, 503, 504}:
-            if str(code) in msg:
-                return True
-    return False
+        if "429" in err_str or "503" in err_str or "502" in err_str or "504" in err_str:
+            return True
+        if "rate limit" in err_str or "too many requests" in err_str:
+            return True
+        return False
+
+    def _extract_usage(self, response: Any) -> dict[str, int]:
+        try:
+            raw = getattr(response, "response_metadata", {}) or {}
+            usage = raw.get("usage", {}) or {}
+            if isinstance(usage, dict):
+                return {
+                    "input_tokens": usage.get("input_tokens") or usage.get("prompt_tokens") or 0,
+                    "output_tokens": usage.get("output_tokens") or usage.get("completion_tokens") or 0,
+                }
+        except Exception:
+            pass
+        try:
+            if hasattr(response, "usage_metadata"):
+                um = response.usage_metadata
+                if um:
+                    return {"input_tokens": um.get("input_tokens", 0), "output_tokens": um.get("output_tokens", 0)}
+        except Exception:
+            pass
+        return {"input_tokens": 0, "output_tokens": 0}
+
+    def _append_jsonl(self, record: LLMCallRecord) -> None:
+        self.session_dir.mkdir(parents=True, exist_ok=True)
+        log_path = self.session_dir / "llm_log.jsonl"
+        line = record.model_dump_json() + "\n"
+        with _jsonl_lock:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(line)
 
 
-def _append_llm_log(session_dir: Path, entry: dict) -> None:
-    log_path = session_dir / "llm_log.jsonl"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(log_path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry) + "\n")
+def build_messages(system: str, user: str) -> list[BaseMessage]:
+    return [SystemMessage(content=system), HumanMessage(content=user)]

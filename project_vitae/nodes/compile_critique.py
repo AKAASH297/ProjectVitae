@@ -1,70 +1,58 @@
-from __future__ import annotations
-
 import logging
 from pathlib import Path
 
-from project_vitae.config import AppConfig
-from project_vitae.io_utils import load_prompt
-from project_vitae.llm_call import LLMCallError, llm_call
-from project_vitae.models import CritiqueResult, SessionState
+from langchain_core.messages import HumanMessage
+from pydantic import BaseModel
+
+from project_vitae.config import Config
+from project_vitae.io_utils import USERPROFILE_DIR, read_text, slugify
+from project_vitae.llm_call import LLMCall
+from project_vitae.models import CritiqueResult, Issue, SessionState
 
 logger = logging.getLogger(__name__)
 
-COMPILE_CRITIQUE_SYSTEM_PROMPT = """You are a resume formatting critique agent. Review the rendered 
-LaTeX source of a resume and assess:
-1. ATS-friendliness (can a parser extract the text correctly?)
-2. Formatting issues that might affect readability
-3. Layout problems
 
-Focus on the LaTeX markup, not the content itself."""
+class CompileCritiqueOutput(BaseModel):
+    issues: list[Issue]
 
 
-async def run_compile_critique(
-    config: AppConfig,
-    session_dir: Path,
-    state: SessionState,
-    tex_path: Path,
-    prompts_dir: Path,
-) -> CritiqueResult:
-    sub_cfg = config.subagents["compile_critique"]
-    prompt_path = prompts_dir / sub_cfg.prompt_version
+def make_compile_critique(cfg: Config):
+    def compile_critique(state: SessionState) -> dict:
+        session_name = state.session_name or "default"
+        session_dir = USERPROFILE_DIR / "sessions" / slugify(session_name)
+        tex_path = session_dir / "resume.tex"
 
-    try:
-        prompt_text = load_prompt(prompt_path)
-    except FileNotFoundError:
-        prompt_text = COMPILE_CRITIQUE_SYSTEM_PROMPT
+        if not tex_path.is_file():
+            logger.warning("no resume.tex found at %s", tex_path)
+            return {"open_issues": state.open_issues}
 
-    tex_content = tex_path.read_text(encoding="utf-8")
+        tex_content = read_text(tex_path)
+        jd = state.job_description or ""
 
-    user_prompt = _build_compile_prompt(state.job_description, tex_content)
+        user_message = (
+            f"Job Description:\n{jd}\n\n"
+            f"Filled LaTeX Content:\n{tex_content[:10000]}\n\n"
+            "Judge ATS-friendliness: check section ordering, single-column readability, "
+            "no exotic packages, consistent date formats, page-break risk.\n"
+            "Output issues with phase='compile'."
+        )
 
-    result, raw = await llm_call(
-        subagent_name="compile_critique",
-        subagent_cfg=sub_cfg,
-        app_cfg=config,
-        system_prompt=prompt_text,
-        user_prompt=user_prompt,
-        session_dir=session_dir,
-        running_cost=0.0,
-        cost_cap=config.cost.per_session_cap_usd,
-        output_model=CritiqueResult,
-    )
+        llm_call = LLMCall(
+            subagent_name="compile_critique",
+            cfg=cfg.subagent("compile_critique"),
+            session_dir=session_dir,
+            output_schema=CompileCritiqueOutput,
+            cost_guard=None,
+            retry_cfg=cfg.retry,
+            config=cfg,
+        )
 
-    if isinstance(raw, CritiqueResult):
-        return raw
-    raise LLMCallError("Compile Critique subagent did not return structured output", recoverable=False)
+        result = llm_call.invoke([HumanMessage(content=user_message)])
+        new_issues: list[Issue] = result.output.issues
 
+        existing = [i for i in state.open_issues if i.phase != "compile"]
+        merged = existing + new_issues
 
-def _build_compile_prompt(jd: str, tex_content: str) -> str:
-    return f"""Job Description:
-{jd}
+        return {"open_issues": merged}
 
-Rendered LaTeX source:
-{tex_content}
-
-Review the LaTeX source for formatting issues that might affect ATS-friendliness or readability.
-Focus on:
-- Proper section structure
-- Clean formatting that ATS parsers can handle
-- Any LaTeX constructs that might cause rendering problems
-"""
+    return compile_critique

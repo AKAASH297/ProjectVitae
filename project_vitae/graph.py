@@ -1,282 +1,257 @@
-from __future__ import annotations
-
 import logging
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Iterator, Literal
 
-import sqlite3
-
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
-from pydantic import BaseModel, Field
+from langgraph.types import Command, interrupt
 
-from project_vitae.config import AppConfig
-from project_vitae.models import (
-    CritiqueResult,
-    ExplorationResult,
-    FilterResult,
-    ProjectRecord,
-    ResumeSection,
-    SectionVersion,
-    SessionState,
-    WritingResult,
-)
-from project_vitae.nodes.preflight import run_preflight, _detect_latex_compiler
-from project_vitae.nodes.clone import clone_repo
-from project_vitae.nodes.explore import explore_repo
-from project_vitae.nodes.filter_node import run_filter
-from project_vitae.nodes.writing import write_section, SECTION_ORDER
-from project_vitae.nodes.content_critique import run_content_critique
-from project_vitae.nodes.compile_critique import run_compile_critique
-from project_vitae.nodes.export_node import run_export
+from project_vitae.config import Config, load_config
+from project_vitae.io_utils import get_userprofile_dir, save_json_model, slugify
+from project_vitae.models import FilterResult, ProjectVitaeError, SessionState
+
+from .nodes.clone import make_clone
+from .nodes.compile_critique import make_compile_critique
+from .nodes.content_critique import make_content_critique
+from .nodes.explore import make_explore
+from .nodes.export_node import make_export
+from .nodes.filter_node import make_filter
+from .nodes.preflight import make_preflight
+from .nodes.writing import make_writing, SECTION_ORDER
 
 logger = logging.getLogger(__name__)
 
 
-class GraphState(BaseModel):
-    userprofile_dir: Path = Path("userprofile")
-    session_dir: Path = Path("userprofile/sessions/default")
-    config: AppConfig | None = None
+def build_graph(cfg: Config, session_name: str) -> CompiledStateGraph:
+    session_slug = slugify(session_name)
 
-    session: SessionState = Field(default_factory=SessionState)
+    workflow = StateGraph(SessionState)
 
-    repo_urls: list[str] = Field(default_factory=list)
-    repo_index: int = 0
-    cloned_paths: dict[str, Path] = Field(default_factory=dict)
-    exploration_results: list[ExplorationResult] = Field(default_factory=list)
+    workflow.add_node("preflight", make_preflight(cfg))
 
-    filter_result: FilterResult | None = None
-    writing_results: dict[str, WritingResult] = Field(default_factory=dict)
-    content_critique_result: CritiqueResult | None = None
-    compile_critique_result: CritiqueResult | None = None
-    export_pdf: str | None = None
+    workflow.add_node("clone", make_clone(cfg))
 
-    user_interrupt: str | None = None
-    feedback: str | None = None
-    skip_repo: bool = False
-    abort_session: bool = False
+    def explore_loop(state: SessionState) -> dict:
+        clone_dirs = state.clone_dirs
+        github_urls = state.github_urls
+        skipped = list(state.skipped_repos)
+        warnings = list(state.exploration_warnings)
 
+        for i, url in enumerate(github_urls):
+            if url in skipped:
+                continue
+            clone_dir = clone_dirs[i] if i < len(clone_dirs) else ""
+            if not clone_dir:
+                continue
 
-def _load_projects(state: GraphState) -> list[ProjectRecord]:
-    projects_dir = state.userprofile_dir / "projects"
-    records: list[ProjectRecord] = []
-    if not projects_dir.exists():
-        return records
-    for proj_dir in projects_dir.iterdir():
-        record_path = proj_dir / "record.yaml"
-        if record_path.exists():
-            try:
-                import yaml
-                with open(record_path, encoding="utf-8") as f:
-                    data = yaml.safe_load(f)
-                records.append(ProjectRecord.model_validate(data))
-            except Exception as e:
-                logger.warning("Failed to load project record %s: %s", record_path, e)
-    return records
+            explore_result = make_explore(cfg, url, clone_dir)(state)
+            if explore_result.get("current_exploration") is None:
+                new_skipped = explore_result.get("skipped_repos", [])
+                skipped = list(set(skipped + new_skipped))
+                new_warnings = explore_result.get("exploration_warnings", [])
+                warnings.extend(new_warnings)
+            else:
+                state = SessionState(**{**state.model_dump(), **explore_result})
 
+        return {
+            "skipped_repos": skipped,
+            "exploration_warnings": warnings,
+        }
 
-async def preflight_node(state: GraphState) -> dict[str, Any]:
-    assert state.config is not None
-    run_preflight(state.config, state.userprofile_dir)
-    compiler = _detect_latex_compiler()
-    return {"user_interrupt": None}
+    workflow.add_node("explore_loop", explore_loop)
 
+    workflow.add_node("filter", make_filter(cfg))
 
-async def clone_node(state: GraphState) -> dict[str, Any]:
-    assert state.config is not None
-    if state.repo_index >= len(state.repo_urls):
-        return {"repo_index": state.repo_index + 1}
+    def filter_pause(state: SessionState) -> dict:
+        proposal = state.filter_proposal
+        if proposal is None:
+            raise ProjectVitaeError("filter did not produce a proposal — cannot continue")
 
-    url = state.repo_urls[state.repo_index]
-    clones_dir = state.userprofile_dir / "clones"
-    cloned_path = clone_repo(url, clones_dir)
-    cloned_paths = dict(state.cloned_paths)
-    cloned_paths[url] = cloned_path
-    return {"cloned_paths": cloned_paths, "repo_index": state.repo_index}
+        payload = {
+            "type": "filter_confirm",
+            "selected": proposal.selected,
+            "rationale": proposal.rationale,
+        }
 
+        result = interrupt(payload)
 
-async def explore_node(state: GraphState) -> dict[str, Any]:
-    assert state.config is not None
-    url = state.repo_urls[state.repo_index - 1]
-    clone_path = state.cloned_paths[url]
+        if isinstance(result, dict):
+            action = result.get("action", "confirm")
+            if action == "confirm":
+                selected = result.get("selected", proposal.selected)
+                return {"selected_projects": selected}
+            elif action == "reject":
+                raise ProjectVitaeError("filter rejected — pipeline aborted")
+        raise ProjectVitaeError("invalid filter interrupt response")
 
-    result = await explore_repo(
-        url=url,
-        clone_path=clone_path,
-        config=state.config,
-        session_dir=state.session_dir,
-        userprofile_dir=state.userprofile_dir,
-        state=state.session,
-        prompts_dir=state.userprofile_dir / "prompts",
-    )
-    results = list(state.exploration_results)
-    results.append(result)
-    return {"exploration_results": results}
+    workflow.add_node("filter_pause", filter_pause)
 
-
-async def filter_node(state: GraphState) -> dict[str, Any]:
-    assert state.config is not None
-    projects = _load_projects(state)
-    result = await run_filter(
-        config=state.config,
-        session_dir=state.session_dir,
-        state=state.session,
-        projects=projects,
-        prompts_dir=state.userprofile_dir / "prompts",
-    )
-    session = state.session.model_copy(deep=True)
-    session.selected_projects = result.selected
-    return {"filter_result": result, "session": session}
-
-
-async def writing_node(state: GraphState, kind: str) -> dict[str, Any]:
-    assert state.config is not None
-    projects = _load_projects(state)
-    selected = [p for p in projects if p.title in state.session.selected_projects]
-
-    userinfo_path = state.userprofile_dir / "userinfo.md"
-    userinfo_text = userinfo_path.read_text(encoding="utf-8") if userinfo_path.exists() else ""
-
-    result = await write_section(
-        kind=kind,
-        config=state.config,
-        session_dir=state.session_dir,
-        state=state.session,
-        projects=selected,
-        userinfo_text=userinfo_text,
-        prompts_dir=state.userprofile_dir / "prompts",
-        feedback=state.feedback,
-    )
-
-    section = ResumeSection(
-        id=result.section_id,
-        kind=kind,  # type: ignore
-        versions=[SectionVersion(
-            content=result.content,
-            feedback_used=state.feedback,
-            provider="manual" if state.feedback else "ai",
-        )],
-    )
-    session = state.session.model_copy(deep=True)
-    existing = [s for s in session.sections if s.id != kind]
-    existing.append(section)
-    session.sections = existing
-
-    writing_results = dict(state.writing_results)
-    writing_results[kind] = result
-    return {"session": session, "writing_results": writing_results, "feedback": None}
-
-
-async def content_critique_node(state: GraphState) -> dict[str, Any]:
-    assert state.config is not None
-    result = await run_content_critique(
-        config=state.config,
-        session_dir=state.session_dir,
-        state=state.session,
-        prompts_dir=state.userprofile_dir / "prompts",
-    )
-    session = state.session.model_copy(deep=True)
-    for issue in result.issues:
-        if issue not in session.open_issues:
-            session.open_issues.append(issue)
-    return {"content_critique_result": result, "session": session}
-
-
-async def compile_critique_node(state: GraphState) -> dict[str, Any]:
-    assert state.config is not None
-    tex_path = state.session_dir / "resume.tex"
-    result = await run_compile_critique(
-        config=state.config,
-        session_dir=state.session_dir,
-        state=state.session,
-        tex_path=tex_path,
-        prompts_dir=state.userprofile_dir / "prompts",
-    )
-    session = state.session.model_copy(deep=True)
-    for issue in result.issues:
-        if issue not in session.open_issues:
-            session.open_issues.append(issue)
-    return {"compile_critique_result": result, "session": session}
-
-
-async def export_node(state: GraphState) -> dict[str, Any]:
-    assert state.config is not None
-    template_path = state.userprofile_dir / state.config.latex.template_path
-    compiler = state.config.latex.compiler
-    if compiler == "auto":
-        compiler = _detect_latex_compiler() or "pdflatex"
-
-    pdf_path = run_export(
-        state=state.session,
-        template_path=template_path,
-        session_dir=state.session_dir,
-        compiler=compiler,
-    )
-    return {"export_pdf": str(pdf_path)}
-
-
-def build_graph() -> CompiledStateGraph:
-    builder = StateGraph(GraphState)
-
-    builder.add_node("preflight", preflight_node)
-    builder.add_node("clone", clone_node)
-    builder.add_node("explore", explore_node)
-    builder.add_node("filter", filter_node)
+    writing_nodes = {}
     for kind in SECTION_ORDER:
-        builder.add_node(f"write_{kind}", lambda s, k=kind: writing_node(s, k))
-    builder.add_node("content_critique", content_critique_node)
-    builder.add_node("export", export_node)
-    builder.add_node("compile_critique", compile_critique_node)
+        node_name = f"writing_{kind}"
+        workflow.add_node(node_name, make_writing(cfg, kind))
+        writing_nodes[kind] = node_name
 
-    builder.set_entry_point("preflight")
+    workflow.add_node("content_critique", make_content_critique(cfg))
 
-    def after_preflight(state: GraphState) -> str:
-        return "clone"
+    def review_pause(state: SessionState) -> dict:
+        payload = {
+            "type": "review",
+            "sections": [
+                {"id": s.id, "kind": s.kind, "status": s.status, "content": s.current.content}
+                for s in state.sections
+            ],
+            "issues": [i.model_dump() for i in state.open_issues],
+        }
 
-    def after_clone(state: GraphState) -> str:
-        if state.repo_index >= len(state.repo_urls):
-            return "filter"
-        return "explore"
+        result = interrupt(payload)
 
-    def after_explore(state: GraphState) -> str:
-        idx = state.repo_index
-        if idx >= len(state.repo_urls):
-            return "filter"
-        return "clone"
+        if isinstance(result, dict):
+            action = result.get("action", "proceed")
+            if action == "proceed":
+                approved_ids = result.get("approved_ids", [s.id for s in state.sections])
+                sections = list(state.sections)
+                for s in sections:
+                    if s.id in approved_ids:
+                        s.status = "approved"
+                return {"sections": sections}
+            elif action == "regen":
+                section_id = result.get("section_id", "")
+                feedback = result.get("feedback", "")
+                return {"current_section_kind": _kind_from_id(state, section_id), "current_feedback": feedback}
+            elif action == "manual_edit":
+                section_id = result.get("section_id", "")
+                new_content = result.get("content", "")
+                return _apply_manual_edit(state, section_id, new_content)
+        raise ProjectVitaeError("invalid review interrupt response")
 
-    def after_filter(state: GraphState) -> str:
-        return "write_experience"
+    workflow.add_node("review_pause", review_pause)
 
-    writer_edges = {}
-    for i, kind in enumerate(SECTION_ORDER):
-        if i + 1 < len(SECTION_ORDER):
-            writer_edges[f"write_{kind}"] = f"write_{SECTION_ORDER[i + 1]}"
-        else:
-            writer_edges[f"write_{kind}"] = "content_critique"
+    workflow.add_node("export", make_export(cfg))
 
-    def after_content_critique(state: GraphState) -> str:
-        if state.content_critique_result and state.content_critique_result.issues:
-            return "export"
+    workflow.add_node("compile_critique", make_compile_critique(cfg))
+
+    def compile_pause(state: SessionState) -> dict:
+        payload = {
+            "type": "compile_critique",
+            "issues": [i.model_dump() for i in state.open_issues if i.phase == "compile"],
+            "final_pdf": state.final_pdf,
+        }
+
+        result = interrupt(payload)
+
+        if isinstance(result, dict):
+            action = result.get("action", "dismiss")
+            if action == "dismiss":
+                return {}
+            elif action == "repass":
+                section_ids = result.get("section_ids", [s.id for s in state.sections])
+                feedback = result.get("feedback", "")
+                if section_ids:
+                    return {"current_section_kind": _kind_from_id(state, section_ids[0]), "current_feedback": feedback}
+                return {}
+        raise ProjectVitaeError("invalid compile critique interrupt response")
+
+    workflow.add_node("compile_pause", compile_pause)
+
+    workflow.set_entry_point("preflight")
+
+    workflow.add_edge("preflight", "clone")
+    workflow.add_edge("clone", "explore_loop")
+    workflow.add_edge("explore_loop", "filter")
+    workflow.add_edge("filter", "filter_pause")
+
+    workflow.add_conditional_edges(
+        "filter_pause",
+        lambda s: "writing_experience" if s.selected_projects else END,
+    )
+
+    prev = "filter_pause"
+    for kind in SECTION_ORDER:
+        node_name = writing_nodes[kind]
+        workflow.add_edge(prev, node_name)
+        prev = node_name
+
+    workflow.add_edge(prev, "content_critique")
+    workflow.add_edge("content_critique", "review_pause")
+
+    def review_router(state: SessionState) -> Literal["writing_experience", "writing_education", "writing_skills", "writing_summary", "export"]:
+        kind = state.current_section_kind
+        if kind and kind in SECTION_ORDER:
+            return writing_nodes[kind]
         return "export"
 
-    def after_export(state: GraphState) -> str:
-        return "compile_critique"
+    workflow.add_conditional_edges("review_pause", review_router, {
+        writing_nodes["experience"]: writing_nodes["experience"],
+        writing_nodes["education"]: writing_nodes["education"],
+        writing_nodes["skills"]: writing_nodes["skills"],
+        writing_nodes["summary"]: writing_nodes["summary"],
+        "export": "export",
+    })
 
-    def after_compile_critique(state: GraphState) -> str:
+    workflow.add_edge("export", "compile_critique")
+    workflow.add_edge("compile_critique", "compile_pause")
+
+    def compile_router(state: SessionState) -> Literal["writing_experience", "writing_education", "writing_skills", "writing_summary", END]:
+        kind = state.current_section_kind
+        if kind and kind in SECTION_ORDER:
+            return writing_nodes[kind]
         return END
 
-    builder.add_conditional_edges("preflight", after_preflight)
-    builder.add_conditional_edges("clone", after_clone)
-    builder.add_conditional_edges("explore", after_explore)
-    builder.add_conditional_edges("filter", after_filter)
-    for kind in SECTION_ORDER:
-        next_kind = writer_edges[f"write_{kind}"]
-        builder.add_edge(f"write_{kind}", next_kind)
-    builder.add_conditional_edges("content_critique", after_content_critique)
-    builder.add_conditional_edges("export", after_export)
-    builder.add_conditional_edges("compile_critique", after_compile_critique)
+    workflow.add_conditional_edges("compile_pause", compile_router, {
+        writing_nodes["experience"]: writing_nodes["experience"],
+        writing_nodes["education"]: writing_nodes["education"],
+        writing_nodes["skills"]: writing_nodes["skills"],
+        writing_nodes["summary"]: writing_nodes["summary"],
+        END: END,
+    })
 
-    conn = sqlite3.connect("userprofile/sessions.db", check_same_thread=False)
-    checkpointer = SqliteSaver(conn)
-    return builder.compile(checkpointer=checkpointer)
+    checkpointer = MemorySaver()
+
+    graph = workflow.compile(checkpointer=checkpointer)
+
+    return graph
+
+
+def iter_graph(
+    graph: CompiledStateGraph,
+    initial_state: dict[str, Any],
+    thread_id: str = "default",
+) -> Iterator[dict[str, Any]]:
+    config = {"configurable": {"thread_id": thread_id}}
+    for event in graph.stream(initial_state, config, stream_mode="updates"):
+        yield event
+
+
+def resume_graph(
+    graph: CompiledStateGraph,
+    command: Command,
+    thread_id: str = "default",
+) -> Iterator[dict[str, Any]]:
+    config = {"configurable": {"thread_id": thread_id}}
+    for event in graph.stream(command, config, stream_mode="updates"):
+        yield event
+
+
+def _kind_from_id(state: SessionState, section_id: str) -> str:
+    for s in state.sections:
+        if s.id == section_id:
+            return s.kind
+    return "experience"
+
+
+def _apply_manual_edit(state: SessionState, section_id: str, new_content: str) -> dict:
+    from datetime import datetime, timezone
+    from project_vitae.models import SectionVersion
+
+    sections = list(state.sections)
+    for s in sections:
+        if s.id == section_id:
+            s.versions.append(SectionVersion(
+                content=new_content,
+                timestamp=datetime.now(timezone.utc),
+                provider="manual",
+            ))
+            s.status = "draft"
+    return {"sections": sections, "current_section_kind": None, "current_feedback": None}

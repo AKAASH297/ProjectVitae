@@ -1,45 +1,23 @@
-from __future__ import annotations
-
-from textual.app import ComposeResult
-from textual.containers import Container, Horizontal
+from textual import on
 from textual.screen import Screen
-from textual.widgets import Button, Label, Static, Header, Footer
+from textual.widgets import Button, Header, Label, Static
 
 
 class ExportScreen(Screen):
-    def __init__(self, pdf_path: str | None = None, error: str | None = None):
-        super().__init__()
-        self._pdf_path = pdf_path
-        self._error = error
+    def __init__(self, pdf_path: str | None = None, log_excerpt: str | None = None, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.pdf_path = pdf_path
+        self.log_excerpt = log_excerpt
 
-    def compose(self) -> ComposeResult:
+    def compose(self):
         yield Header()
-        yield Container(
-            Label("Export", classes="title"),
-            Static(id="export_status"),
-            Horizontal(
-                Button("Open PDF", id="open_pdf", variant="success"),
-                Button("Back to Review", id="back", variant="primary"),
-                Button("Done", id="done", variant="default"),
-            ),
-            id="main_container",
-        )
-        yield Footer()
+        yield Static("## Export", id="title")
+        if self.pdf_path:
+            yield Label(f"PDF produced: {self.pdf_path}")
+        if self.log_excerpt:
+            yield Label(f"LaTeX log:\n{self.log_excerpt}")
+        yield Button("Proceed to Compile Critique", id="proceed", variant="primary")
 
-    def on_mount(self) -> None:
-        status = self.query_one("#export_status", Static)
-        if self._pdf_path:
-            status.update(f"✅ PDF produced at:\n{self._pdf_path}")
-        elif self._error:
-            status.update(f"❌ Export failed:\n{self._error}")
-        else:
-            status.update("Exporting...")
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "done":
-            self.dismiss({"action": "done"})
-        elif event.button.id == "back":
-            self.dismiss({"action": "back"})
-        elif event.button.id == "open_pdf" and self._pdf_path:
-            import subprocess
-            subprocess.Popen(["start", self._pdf_path], shell=True)
+    @on(Button.Pressed, "#proceed")
+    def on_proceed(self):
+        self.app.pop_screen()
