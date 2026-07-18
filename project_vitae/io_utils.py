@@ -8,7 +8,7 @@ from typing import Any, Sequence, TypeVar
 import yaml
 from pydantic import BaseModel
 
-from project_vitae.models import ProjectVitaeError, ProjectRecord
+from project_vitae.models import ProjectRecord, ProjectVitaeError
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +108,9 @@ def serialize_userinfo(front_matter: dict, body: str) -> str:
     parts = []
     if front_matter:
         parts.append("---")
-        parts.append(yaml.safe_dump(front_matter, default_flow_style=False, allow_unicode=True).strip())
+        parts.append(
+            yaml.safe_dump(front_matter, default_flow_style=False, allow_unicode=True).strip()
+        )
         parts.append("---")
     parts.append(body)
     return "\n\n".join(p for p in parts if p)

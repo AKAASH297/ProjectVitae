@@ -1,7 +1,5 @@
 from unittest.mock import MagicMock
 
-import pytest
-
 from project_vitae.models import FilterResult, SessionState
 from project_vitae.nodes.filter_node import make_filter
 
@@ -25,9 +23,6 @@ def test_filter_node_returns_proposal(tmp_path, monkeypatch):
     cfg.retry.max_attempts = 3
     cfg.cost.pricing_overrides = {}
     cfg.subagent.return_value.system_prompt_override = None
-
-    from project_vitae.nodes.filter_node import LLMCall
-    original_invoke = LLMCall.invoke
 
     def fake_invoke(self, messages, prompt_override=None):
         fake_result = MagicMock()
@@ -57,8 +52,6 @@ def test_filter_empty_projects(tmp_path, monkeypatch):
     )
     cfg.retry.max_attempts = 3
     cfg.cost.pricing_overrides = {}
-
-    from project_vitae.nodes.filter_node import LLMCall
 
     def fake_invoke(self, messages, prompt_override=None):
         fake_result = MagicMock()

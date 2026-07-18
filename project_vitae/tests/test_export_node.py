@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from project_vitae.config import Config, LatexConfig, RetryConfig, CostConfig
+from project_vitae.config import Config, CostConfig, LatexConfig, RetryConfig
 from project_vitae.models import ResumeSection, SectionVersion, SessionState, TemplateError
 from project_vitae.nodes import export_node
 from project_vitae.nodes.export_node import make_export
@@ -12,11 +12,28 @@ from project_vitae.nodes.export_node import make_export
 
 def _make_state() -> SessionState:
     now = datetime.now(timezone.utc)
-    v = SectionVersion(content="Worked on $100M projects & more", timestamp=now, provider="anthropic")
+    v = SectionVersion(
+        content="Worked on $100M projects & more", timestamp=now, provider="anthropic"
+    )
     section = ResumeSection(id="exp1", kind="experience", versions=[v], status="approved")
-    edu = ResumeSection(id="edu1", kind="education", versions=[SectionVersion(content="MIT", timestamp=now, provider="manual")], status="approved")
-    skills = ResumeSection(id="skill1", kind="skills", versions=[SectionVersion(content="Python, Go", timestamp=now, provider="manual")], status="approved")
-    summary = ResumeSection(id="sum1", kind="summary", versions=[SectionVersion(content="Senior engineer", timestamp=now, provider="anthropic")], status="approved")
+    edu = ResumeSection(
+        id="edu1",
+        kind="education",
+        versions=[SectionVersion(content="MIT", timestamp=now, provider="manual")],
+        status="approved",
+    )
+    skills = ResumeSection(
+        id="skill1",
+        kind="skills",
+        versions=[SectionVersion(content="Python, Go", timestamp=now, provider="manual")],
+        status="approved",
+    )
+    summary = ResumeSection(
+        id="sum1",
+        kind="summary",
+        versions=[SectionVersion(content="Senior engineer", timestamp=now, provider="anthropic")],
+        status="approved",
+    )
     return SessionState(
         session_name="test",
         sections=[section, edu, skills, summary],
@@ -35,13 +52,13 @@ def _make_cfg() -> MagicMock:
 def test_export_fills_and_compiles(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(export_node, "USERPROFILE_DIR", tmp_path)
     tpl = tmp_path / "template.tex"
-    tpl.write_text(
-        r"\VAR{experience}\VAR{education}\VAR{skills}\VAR{summary}"
-    )
+    tpl.write_text(r"\VAR{experience}\VAR{education}\VAR{skills}\VAR{summary}")
     cfg = _make_cfg()
 
-    with patch("project_vitae.nodes.export_node.detect_compiler", return_value="pdflatex"), \
-         patch("project_vitae.nodes.export_node.compile_pdf") as mock_compile:
+    with (
+        patch("project_vitae.nodes.export_node.detect_compiler", return_value="pdflatex"),
+        patch("project_vitae.nodes.export_node.compile_pdf") as mock_compile,
+    ):
         mock_compile.return_value = tmp_path / "sessions" / "test" / "output" / "resume.pdf"
         result = make_export(cfg)(_make_state())
 

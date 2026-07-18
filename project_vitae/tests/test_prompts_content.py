@@ -4,7 +4,6 @@ import pytest
 
 from project_vitae.prompts import load_prompt
 
-
 PROMPT_FILES = [
     ("prompts/explore/v1.md", "ExplorationResult"),
     ("prompts/filter/v1.md", "FilterResult"),

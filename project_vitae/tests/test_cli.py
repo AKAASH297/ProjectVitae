@@ -1,7 +1,3 @@
-from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-import pytest
 from typer.testing import CliRunner
 
 from project_vitae.__main__ import app
@@ -21,9 +17,13 @@ def test_run_no_urls():
 
 def test_run_bad_jd_path(tmp_path):
     bad_path = tmp_path / "nonexistent.md"
-    result = runner.invoke(app, [
-        "run",
-        "https://github.com/user/repo",
-        "--jd", str(bad_path),
-    ])
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "https://github.com/user/repo",
+            "--jd",
+            str(bad_path),
+        ],
+    )
     assert result.exit_code != 0

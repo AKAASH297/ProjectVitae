@@ -1,22 +1,19 @@
 import logging
-from pathlib import Path
 from typing import Any
 
 from textual.app import App
 from textual.binding import Binding
 
 from project_vitae.config import Config, load_config
-from project_vitae.graph import build_graph, iter_graph, resume_graph
+from project_vitae.graph import build_graph, iter_graph
 from project_vitae.io_utils import USERPROFILE_DIR, slugify
 from project_vitae.models import SessionState
-from project_vitae.session_lock import SessionLock, list_resumable_sessions
+from project_vitae.session_lock import SessionLock
 
-from .screens.setup import SetupScreen
-from .screens.exploration import ExplorationScreen
+from .screens.compile_critique_screen import CompileCritiqueScreen
 from .screens.filter_screen import FilterScreen
 from .screens.review import ReviewScreen
-from .screens.export_screen import ExportScreen
-from .screens.compile_critique_screen import CompileCritiqueScreen
+from .screens.setup import SetupScreen
 
 logger = logging.getLogger(__name__)
 
@@ -78,13 +75,15 @@ class ProjectVitaeApp(App):
 
     def _advance_graph(self) -> None:
         import threading
+
         def run():
             try:
-                for event in (self.graph_iterator or []):
+                for event in self.graph_iterator or []:
                     self.call_from_thread(self._handle_event, event)
             except Exception as e:
                 logger.error("pipeline error: %s", e, exc_info=True)
                 self.call_from_thread(self._show_error, str(e))
+
         threading.Thread(target=run, daemon=True).start()
 
     def _handle_event(self, event: dict[str, Any]) -> None:
@@ -103,13 +102,17 @@ class ProjectVitaeApp(App):
 
     def _show_error(self, message: str) -> None:
         from textual.screen import ModalScreen
+
         class ErrorScreen(ModalScreen[None]):
             def compose(self):
-                from textual.widgets import Label, Button
+                from textual.widgets import Button, Label
+
                 yield Label(message)
                 yield Button("OK")
+
             def on_button_pressed(self, event):
                 self.app.pop_screen()
+
         self.push_screen(ErrorScreen())
 
     def action_save_state(self) -> None:

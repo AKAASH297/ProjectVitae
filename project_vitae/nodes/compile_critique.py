@@ -1,5 +1,4 @@
 import logging
-from pathlib import Path
 
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
@@ -7,7 +6,7 @@ from pydantic import BaseModel
 from project_vitae.config import Config
 from project_vitae.io_utils import USERPROFILE_DIR, read_text, slugify
 from project_vitae.llm_call import LLMCall
-from project_vitae.models import CritiqueResult, Issue, SessionState
+from project_vitae.models import Issue, SessionState
 
 logger = logging.getLogger(__name__)
 

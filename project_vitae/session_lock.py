@@ -3,7 +3,6 @@ import logging
 import os
 import subprocess
 import threading
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -21,7 +20,9 @@ def _pid_is_alive(pid: int) -> bool:
         if os.name == "nt":
             result = subprocess.run(
                 ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             return str(pid) in result.stdout
         else:
@@ -45,11 +46,21 @@ class SessionLock:
                 data = json.loads(read_text(self.lock_path))
                 lock_pid = data.get("pid")
                 started = data.get("started_at", "")
-                age = (datetime.now(timezone.utc) - datetime.fromisoformat(started)).total_seconds() if started else 0
-                if lock_pid and _pid_is_alive(lock_pid) and age < STALE_THRESHOLD_SECONDS and not force:
+                age = (
+                    (datetime.now(timezone.utc) - datetime.fromisoformat(started)).total_seconds()
+                    if started
+                    else 0
+                )
+                if (
+                    lock_pid
+                    and _pid_is_alive(lock_pid)
+                    and age < STALE_THRESHOLD_SECONDS
+                    and not force
+                ):
                     raise SessionLockError(
                         f"session is locked by PID {lock_pid} (age={age:.0f}s); "
-                        f"use force=True or wait for the lock to expire ({STALE_THRESHOLD_SECONDS}s)"
+                        "use force=True or wait for the lock to expire "
+                        f"({STALE_THRESHOLD_SECONDS}s)"
                     )
             self._write_lock()
             self._locked = True
@@ -87,6 +98,7 @@ class SessionLock:
 
 def list_resumable_sessions(userprofile_dir: Path | None = None) -> list[str]:
     from project_vitae.io_utils import USERPROFILE_DIR
+
     base = userprofile_dir or USERPROFILE_DIR
     sessions_dir = base / "sessions"
     if not sessions_dir.is_dir():

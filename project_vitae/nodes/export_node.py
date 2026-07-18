@@ -1,5 +1,4 @@
 import logging
-from pathlib import Path
 
 from project_vitae.config import Config
 from project_vitae.io_utils import USERPROFILE_DIR, atomic_write_text, read_text, slugify
@@ -31,11 +30,18 @@ def make_export(cfg: Config):
         template = read_text(template_path)
         missing, unknown = validate_template_placeholders(template)
         if missing:
-            raise TemplateError(f"missing required placeholders in template: {', '.join(sorted(missing))}")
+            raise TemplateError(
+                f"missing required placeholders in template: {', '.join(sorted(missing))}"
+            )
         if unknown:
             logger.info("unknown placeholders (will pass through): %s", unknown)
 
-        section_content: dict[str, str] = {"experience": "", "education": "", "skills": "", "summary": ""}
+        section_content: dict[str, str] = {
+            "experience": "",
+            "education": "",
+            "skills": "",
+            "summary": "",
+        }
         for sec in state.sections:
             if sec.kind in section_content and sec.versions:
                 section_content[sec.kind] = sec.current.content

@@ -1,6 +1,5 @@
 import logging
 import re
-from pathlib import Path
 
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
@@ -8,7 +7,7 @@ from pydantic import BaseModel
 from project_vitae.config import Config
 from project_vitae.io_utils import USERPROFILE_DIR, slugify
 from project_vitae.llm_call import LLMCall
-from project_vitae.models import CritiqueResult, Issue, SessionState
+from project_vitae.models import Issue, SessionState
 
 logger = logging.getLogger(__name__)
 
@@ -18,23 +17,22 @@ class ContentCritiqueOutput(BaseModel):
 
 
 def _keyword_overlap(jd: str, section_text: str) -> list[Issue]:
-    jd_terms = set(
-        w.lower()
-        for w in re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}", jd or "")
-    )
+    jd_terms = set(w.lower() for w in re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}", jd or ""))
     if not jd_terms:
         return []
     text_lower = section_text.lower()
     missing: list[Issue] = []
     for term in sorted(jd_terms):
         if term not in text_lower:
-            missing.append(Issue(
-                location="global",
-                kind="content_keyword",
-                note=f"JD term '{term}' not found in draft content",
-                keyword_match=False,
-                phase="content",
-            ))
+            missing.append(
+                Issue(
+                    location="global",
+                    kind="content_keyword",
+                    note=f"JD term '{term}' not found in draft content",
+                    keyword_match=False,
+                    phase="content",
+                )
+            )
     return missing
 
 

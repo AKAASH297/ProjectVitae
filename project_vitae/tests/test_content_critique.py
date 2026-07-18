@@ -1,8 +1,6 @@
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
-import pytest
-
 from project_vitae.models import (
     Issue,
     ResumeSection,
@@ -60,13 +58,17 @@ def test_content_critique_merged_issues(tmp_path, monkeypatch):
     cfg.retry.max_attempts = 3
     cfg.cost.pricing_overrides = {}
 
-    from project_vitae.nodes.content_critique import LLMCall
-
     def fake_invoke(self, messages, prompt_override=None):
         fake_result = MagicMock()
         fake_result.output = MagicMock()
         fake_result.output.issues = [
-            Issue(location="exp1", kind="content_keyword", note="tone could be more assertive", keyword_match=None, phase="content"),
+            Issue(
+                location="exp1",
+                kind="content_keyword",
+                note="tone could be more assertive",
+                keyword_match=None,
+                phase="content",
+            ),
         ]
         return fake_result
 
@@ -94,13 +96,17 @@ def test_content_critique_sets_needs_review(tmp_path, monkeypatch):
     cfg.retry.max_attempts = 3
     cfg.cost.pricing_overrides = {}
 
-    from project_vitae.nodes.content_critique import LLMCall
-
     def fake_invoke(self, messages, prompt_override=None):
         fake_result = MagicMock()
         fake_result.output = MagicMock()
         fake_result.output.issues = [
-            Issue(location="global", kind="content_keyword", note="missing term", keyword_match=None, phase="content"),
+            Issue(
+                location="global",
+                kind="content_keyword",
+                note="missing term",
+                keyword_match=None,
+                phase="content",
+            ),
         ]
         return fake_result
 

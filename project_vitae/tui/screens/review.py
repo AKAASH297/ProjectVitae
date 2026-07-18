@@ -1,8 +1,7 @@
+from langgraph.types import Command
 from textual import on
 from textual.screen import Screen
-from textual.widgets import Button, Header, Input, Label, ListView, Static, TextArea
-
-from langgraph.types import Command
+from textual.widgets import Button, Header, Label, Static
 
 from project_vitae.graph import resume_graph
 
@@ -30,9 +29,7 @@ class ReviewScreen(Screen):
         button_id = event.button.id or ""
 
         if button_id == "proceed":
-            approved_ids = [
-                s.get("id") for s in self.payload.get("sections", [])
-            ]
+            approved_ids = [s.get("id") for s in self.payload.get("sections", [])]
             self.app.graph_iterator = resume_graph(
                 self.app.graph,
                 Command(resume={"action": "proceed", "approved_ids": approved_ids}),
@@ -44,12 +41,16 @@ class ReviewScreen(Screen):
             pass
         elif button_id.startswith("regen_"):
             section_id = button_id.replace("regen_", "")
+
             def notify_regen(feedback: str = ""):
                 self.app.graph_iterator = resume_graph(
                     self.app.graph,
-                    Command(resume={"action": "regen", "section_id": section_id, "feedback": feedback}),
+                    Command(
+                        resume={"action": "regen", "section_id": section_id, "feedback": feedback}
+                    ),
                     thread_id=self.app.session_name,
                 )
                 self.app._advance_graph()
                 self.app.pop_screen()
+
             notify_regen()

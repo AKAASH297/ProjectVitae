@@ -1,7 +1,6 @@
 import logging
 import re
 import subprocess
-from pathlib import Path
 
 import requests
 
@@ -58,7 +57,9 @@ def make_clone(cfg: Config):
             try:
                 result = subprocess.run(
                     ["git", "clone", "--depth", "1", url, str(dest)],
-                    capture_output=True, text=True, timeout=300,
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
                 )
                 if result.returncode != 0:
                     stderr = result.stderr[-500:]

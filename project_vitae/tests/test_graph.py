@@ -1,10 +1,6 @@
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
-
-from project_vitae.config import Config, LatexConfig, RetryConfig, CostConfig, SubagentConfig
-from project_vitae.models import SessionState
+from project_vitae.config import Config, CostConfig, LatexConfig, RetryConfig, SubagentConfig
 
 
 def _make_cfg() -> MagicMock:
@@ -40,5 +36,6 @@ def test_graph_happy_path(tmp_path, monkeypatch):
     cfg = _make_cfg()
 
     from project_vitae.graph import build_graph
+
     graph = build_graph(cfg, "test")
     assert graph is not None

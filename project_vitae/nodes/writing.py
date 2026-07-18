@@ -1,6 +1,5 @@
 import logging
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Literal
 
 from langchain_core.messages import HumanMessage
@@ -18,11 +17,16 @@ from project_vitae.models import (
 logger = logging.getLogger(__name__)
 
 SECTION_ORDER: list[Literal["experience", "education", "skills", "summary"]] = [
-    "experience", "education", "skills", "summary",
+    "experience",
+    "education",
+    "skills",
+    "summary",
 ]
 
 
-def make_writing(cfg: Config, section_kind: Literal["experience", "education", "skills", "summary"]):
+def make_writing(
+    cfg: Config, section_kind: Literal["experience", "education", "skills", "summary"]
+):
     def writing_node(state: SessionState) -> dict:
         session_name = state.session_name or "default"
         session_dir = USERPROFILE_DIR / "sessions" / slugify(session_name)
@@ -34,7 +38,9 @@ def make_writing(cfg: Config, section_kind: Literal["experience", "education", "
 
         try:
             userinfo_path = USERPROFILE_DIR / "userinfo.md"
-            userinfo = read_text(userinfo_path) if userinfo_path.is_file() else "No userinfo available."
+            userinfo = (
+                read_text(userinfo_path) if userinfo_path.is_file() else "No userinfo available."
+            )
         except Exception:
             userinfo = "Error reading userinfo."
 
@@ -98,11 +104,13 @@ def make_writing(cfg: Config, section_kind: Literal["experience", "education", "
                 found = True
                 break
         if not found:
-            sections.append(ResumeSection(
-                id=f"{section_kind}_{len(sections)}",
-                kind=section_kind,
-                versions=[version],
-            ))
+            sections.append(
+                ResumeSection(
+                    id=f"{section_kind}_{len(sections)}",
+                    kind=section_kind,
+                    versions=[version],
+                )
+            )
 
         cache = dict(state.generated_sections_cache)
         cache[section_kind] = writing_result.content

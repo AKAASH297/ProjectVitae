@@ -1,8 +1,7 @@
+from langgraph.types import Command
 from textual import on
 from textual.screen import Screen
-from textual.widgets import Button, Header, Label, ListView, Static
-
-from langgraph.types import Command
+from textual.widgets import Button, Header, Label, Static
 
 from project_vitae.graph import resume_graph
 

@@ -4,7 +4,9 @@ from textual.widgets import Button, Header, Label, Static
 
 
 class ExportScreen(Screen):
-    def __init__(self, pdf_path: str | None = None, log_excerpt: str | None = None, *args, **kwargs):
+    def __init__(
+        self, pdf_path: str | None = None, log_excerpt: str | None = None, *args, **kwargs
+    ):
         super().__init__(*args, **kwargs)
         self.pdf_path = pdf_path
         self.log_excerpt = log_excerpt

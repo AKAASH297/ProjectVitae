@@ -6,11 +6,10 @@ import yaml
 
 from project_vitae.io_utils import (
     USERPROFILE_DIR,
-    atomic_write_text,
     atomic_write_bytes,
+    atomic_write_text,
     dump_yaml,
     find_project_dir,
-    get_userprofile_dir,
     load_project_records,
     load_yaml,
     parse_userinfo,
@@ -63,7 +62,6 @@ def test_dump_yaml_and_load_yaml(tmp_path: Path):
 
 
 def test_save_json_model(tmp_path: Path):
-    from project_vitae.models import ProjectRecord
     rec = ProjectRecord(title="T", summary="S", tags=["a"], source_repo="https://github.com/u/r")
     p = tmp_path / "rec.json"
     save_json_model(p, rec)
@@ -132,7 +130,6 @@ def test_serialize_userinfo_no_front():
 
 
 def test_find_project_dir_new(tmp_path: Path, monkeypatch):
-    from project_vitae.io_utils import USERPROFILE_DIR
     monkeypatch.setattr("project_vitae.io_utils.USERPROFILE_DIR", tmp_path)
     (tmp_path / "projects").mkdir()
     result = find_project_dir("New Project")
@@ -144,7 +141,16 @@ def test_find_project_dir_match_by_slug(tmp_path: Path, monkeypatch):
     proj = tmp_path / "projects" / "existing-project"
     proj.mkdir(parents=True)
     rec = proj / "record.yaml"
-    rec.write_text(yaml.safe_dump({"title": "Existing Project", "summary": "s", "tags": [], "source_repo": "https://github.com/u/r"}))
+    rec.write_text(
+        yaml.safe_dump(
+            {
+                "title": "Existing Project",
+                "summary": "s",
+                "tags": [],
+                "source_repo": "https://github.com/u/r",
+            }
+        )
+    )
     result = find_project_dir("Existing Project")
     assert result.name == "existing-project"
 
@@ -154,7 +160,16 @@ def test_find_project_dir_match_by_title_case_insensitive(tmp_path: Path, monkey
     proj = tmp_path / "projects" / "old-proj"
     proj.mkdir(parents=True)
     rec = proj / "record.yaml"
-    rec.write_text(yaml.safe_dump({"title": "Old Proj", "summary": "s", "tags": [], "source_repo": "https://github.com/u/r"}))
+    rec.write_text(
+        yaml.safe_dump(
+            {
+                "title": "Old Proj",
+                "summary": "s",
+                "tags": [],
+                "source_repo": "https://github.com/u/r",
+            }
+        )
+    )
     result = find_project_dir("old proj")
     assert result.name == "old-proj"
 
@@ -163,11 +178,25 @@ def test_load_project_records(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("project_vitae.io_utils.get_userprofile_dir", lambda: tmp_path)
     (tmp_path / "projects" / "p1").mkdir(parents=True)
     (tmp_path / "projects" / "p1" / "record.yaml").write_text(
-        yaml.safe_dump({"title": "P1", "summary": "S1", "tags": ["a"], "source_repo": "https://github.com/u/r1"})
+        yaml.safe_dump(
+            {
+                "title": "P1",
+                "summary": "S1",
+                "tags": ["a"],
+                "source_repo": "https://github.com/u/r1",
+            }
+        )
     )
     (tmp_path / "projects" / "p2").mkdir()
     (tmp_path / "projects" / "p2" / "record.yaml").write_text(
-        yaml.safe_dump({"title": "P2", "summary": "S2", "tags": ["b"], "source_repo": "https://github.com/u/r2"})
+        yaml.safe_dump(
+            {
+                "title": "P2",
+                "summary": "S2",
+                "tags": ["b"],
+                "source_repo": "https://github.com/u/r2",
+            }
+        )
     )
     records = load_project_records()
     assert len(records) == 2

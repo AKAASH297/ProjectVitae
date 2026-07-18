@@ -5,18 +5,21 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from project_vitae.models import ConfigError
 from project_vitae.io_utils import USERPROFILE_DIR, load_yaml
+from project_vitae.models import ConfigError
 
 logger = logging.getLogger(__name__)
 
-REQUIRED_SUBAGENTS = frozenset({"explore", "filter", "writing", "content_critique", "compile_critique"})
+REQUIRED_SUBAGENTS = frozenset(
+    {"explore", "filter", "writing", "content_critique", "compile_critique"}
+)
 
 
 class SubagentConfig(BaseModel):
     provider: Literal["anthropic", "openai_compatible"]
     base_url: str | None = None
-    api_key_env: str
+    api_key: str | None = None
+    api_key_env: str | None = None
     model: str
     prompt_version: str
     temperature: float = 0.3
@@ -65,9 +68,10 @@ class Config(BaseModel):
 
     def api_key(self, subagent_name: str) -> str:
         cfg = self.subagent(subagent_name)
-        key = os.environ.get(cfg.api_key_env)
+        key = cfg.api_key or (os.environ.get(cfg.api_key_env) if cfg.api_key_env else None)
         if not key:
-            raise ConfigError(f"environment variable {cfg.api_key_env} not set for subagent '{subagent_name}'")
+            source = f"environment variable {cfg.api_key_env}" if cfg.api_key_env else "API key"
+            raise ConfigError(f"{source} not set for subagent '{subagent_name}'")
         return key
 
 
@@ -88,10 +92,20 @@ def load_config(path: Path | None = None) -> Config:
 
 
 _CONFIG_ROOT_KEYS = frozenset({"subagents", "retry", "cost", "latex", "log_level"})
-_SUBAGENT_KEYS = frozenset({
-    "provider", "base_url", "api_key_env", "model", "prompt_version",
-    "temperature", "max_tokens", "per_repo_token_budget", "system_prompt_override",
-})
+_SUBAGENT_KEYS = frozenset(
+    {
+        "provider",
+        "base_url",
+        "api_key",
+        "api_key_env",
+        "model",
+        "prompt_version",
+        "temperature",
+        "max_tokens",
+        "per_repo_token_budget",
+        "system_prompt_override",
+    }
+)
 
 
 def _check_unknown_keys(data: dict[str, Any], allowed: frozenset[str], label: str) -> None:

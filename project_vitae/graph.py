@@ -1,5 +1,4 @@
 import logging
-from pathlib import Path
 from typing import Any, Iterator, Literal
 
 from langgraph.checkpoint.memory import MemorySaver
@@ -7,9 +6,8 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, interrupt
 
-from project_vitae.config import Config, load_config
-from project_vitae.io_utils import get_userprofile_dir, save_json_model, slugify
-from project_vitae.models import FilterResult, ProjectVitaeError, SessionState
+from project_vitae.config import Config
+from project_vitae.models import ProjectVitaeError, SessionState
 
 from .nodes.clone import make_clone
 from .nodes.compile_critique import make_compile_critique
@@ -18,18 +16,15 @@ from .nodes.explore import make_explore
 from .nodes.export_node import make_export
 from .nodes.filter_node import make_filter
 from .nodes.preflight import make_preflight
-from .nodes.writing import make_writing, SECTION_ORDER
+from .nodes.writing import SECTION_ORDER, make_writing
 
 logger = logging.getLogger(__name__)
 
 
 def build_graph(cfg: Config, session_name: str) -> CompiledStateGraph:
-    session_slug = slugify(session_name)
-
     workflow = StateGraph(SessionState)
 
     workflow.add_node("preflight", make_preflight(cfg))
-
     workflow.add_node("clone", make_clone(cfg))
 
     def explore_loop(state: SessionState) -> dict:
@@ -60,7 +55,6 @@ def build_graph(cfg: Config, session_name: str) -> CompiledStateGraph:
         }
 
     workflow.add_node("explore_loop", explore_loop)
-
     workflow.add_node("filter", make_filter(cfg))
 
     def filter_pause(state: SessionState) -> dict:
@@ -78,10 +72,10 @@ def build_graph(cfg: Config, session_name: str) -> CompiledStateGraph:
 
         if isinstance(result, dict):
             action = result.get("action", "confirm")
-            if action == "confirm":
+            if action in ("confirm", "proceed"):
                 selected = result.get("selected", proposal.selected)
                 return {"selected_projects": selected}
-            elif action == "reject":
+            if action == "reject":
                 raise ProjectVitaeError("filter rejected — pipeline aborted")
         raise ProjectVitaeError("invalid filter interrupt response")
 
@@ -119,7 +113,10 @@ def build_graph(cfg: Config, session_name: str) -> CompiledStateGraph:
             elif action == "regen":
                 section_id = result.get("section_id", "")
                 feedback = result.get("feedback", "")
-                return {"current_section_kind": _kind_from_id(state, section_id), "current_feedback": feedback}
+                return {
+                    "current_section_kind": _kind_from_id(state, section_id),
+                    "current_feedback": feedback,
+                }
             elif action == "manual_edit":
                 section_id = result.get("section_id", "")
                 new_content = result.get("content", "")
@@ -149,7 +146,10 @@ def build_graph(cfg: Config, session_name: str) -> CompiledStateGraph:
                 section_ids = result.get("section_ids", [s.id for s in state.sections])
                 feedback = result.get("feedback", "")
                 if section_ids:
-                    return {"current_section_kind": _kind_from_id(state, section_ids[0]), "current_feedback": feedback}
+                    return {
+                        "current_section_kind": _kind_from_id(state, section_ids[0]),
+                        "current_feedback": feedback,
+                    }
                 return {}
         raise ProjectVitaeError("invalid compile critique interrupt response")
 
@@ -176,39 +176,54 @@ def build_graph(cfg: Config, session_name: str) -> CompiledStateGraph:
     workflow.add_edge(prev, "content_critique")
     workflow.add_edge("content_critique", "review_pause")
 
-    def review_router(state: SessionState) -> Literal["writing_experience", "writing_education", "writing_skills", "writing_summary", "export"]:
+    def review_router(
+        state: SessionState,
+    ) -> Literal[
+        "writing_experience", "writing_education", "writing_skills", "writing_summary", "export"
+    ]:
         kind = state.current_section_kind
         if kind and kind in SECTION_ORDER:
             return writing_nodes[kind]
         return "export"
 
-    workflow.add_conditional_edges("review_pause", review_router, {
-        writing_nodes["experience"]: writing_nodes["experience"],
-        writing_nodes["education"]: writing_nodes["education"],
-        writing_nodes["skills"]: writing_nodes["skills"],
-        writing_nodes["summary"]: writing_nodes["summary"],
-        "export": "export",
-    })
+    workflow.add_conditional_edges(
+        "review_pause",
+        review_router,
+        {
+            writing_nodes["experience"]: writing_nodes["experience"],
+            writing_nodes["education"]: writing_nodes["education"],
+            writing_nodes["skills"]: writing_nodes["skills"],
+            writing_nodes["summary"]: writing_nodes["summary"],
+            "export": "export",
+        },
+    )
 
     workflow.add_edge("export", "compile_critique")
     workflow.add_edge("compile_critique", "compile_pause")
 
-    def compile_router(state: SessionState) -> Literal["writing_experience", "writing_education", "writing_skills", "writing_summary", END]:
+    def compile_router(
+        state: SessionState,
+    ) -> Literal[
+        "writing_experience", "writing_education", "writing_skills", "writing_summary", END
+    ]:
         kind = state.current_section_kind
         if kind and kind in SECTION_ORDER:
             return writing_nodes[kind]
         return END
 
-    workflow.add_conditional_edges("compile_pause", compile_router, {
-        writing_nodes["experience"]: writing_nodes["experience"],
-        writing_nodes["education"]: writing_nodes["education"],
-        writing_nodes["skills"]: writing_nodes["skills"],
-        writing_nodes["summary"]: writing_nodes["summary"],
-        END: END,
-    })
+    workflow.add_conditional_edges(
+        "compile_pause",
+        compile_router,
+        {
+            writing_nodes["experience"]: writing_nodes["experience"],
+            writing_nodes["education"]: writing_nodes["education"],
+            writing_nodes["skills"]: writing_nodes["skills"],
+            writing_nodes["summary"]: writing_nodes["summary"],
+            END: END,
+        },
+    )
 
     checkpointer = MemorySaver()
-
     graph = workflow.compile(checkpointer=checkpointer)
 
     return graph
@@ -243,15 +258,18 @@ def _kind_from_id(state: SessionState, section_id: str) -> str:
 
 def _apply_manual_edit(state: SessionState, section_id: str, new_content: str) -> dict:
     from datetime import datetime, timezone
+
     from project_vitae.models import SectionVersion
 
     sections = list(state.sections)
     for s in sections:
         if s.id == section_id:
-            s.versions.append(SectionVersion(
-                content=new_content,
-                timestamp=datetime.now(timezone.utc),
-                provider="manual",
-            ))
+            s.versions.append(
+                SectionVersion(
+                    content=new_content,
+                    timestamp=datetime.now(timezone.utc),
+                    provider="manual",
+                )
+            )
             s.status = "draft"
     return {"sections": sections, "current_section_kind": None, "current_feedback": None}

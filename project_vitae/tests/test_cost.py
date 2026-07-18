@@ -1,6 +1,6 @@
 import pytest
 
-from project_vitae.cost import CostGuard, PRICING_TABLE, compute_cost
+from project_vitae.cost import CostGuard, compute_cost
 from project_vitae.models import CostCapReached
 
 

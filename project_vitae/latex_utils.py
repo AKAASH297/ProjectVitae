@@ -5,7 +5,7 @@ import subprocess
 from functools import lru_cache
 from pathlib import Path
 
-from jinja2 import Environment, TemplateNotFound, Undefined
+from jinja2 import Environment, Undefined
 
 from project_vitae.models import TemplateError
 
@@ -57,7 +57,6 @@ class _PassthroughUndefined(Undefined):
 
 def fill_template(template: str, sections: dict[str, str]) -> str:
     existing = extract_placeholders(template)
-    required = REQUIRED_PLACEHOLDERS & existing
     missing_required = REQUIRED_PLACEHOLDERS - set(sections.keys())
     if missing_required:
         raise TemplateError(f"missing required placeholders: {', '.join(sorted(missing_required))}")
@@ -104,7 +103,13 @@ def compile_pdf(tex_path: Path, out_dir: Path, compiler: str) -> Path:
     elif compiler == "pdflatex":
         for _ in range(2):
             result = subprocess.run(
-                ["pdflatex", "-interaction=nonstopmode", "-output-directory", str(out_dir), str(tex_path)],
+                [
+                    "pdflatex",
+                    "-interaction=nonstopmode",
+                    "-output-directory",
+                    str(out_dir),
+                    str(tex_path),
+                ],
                 capture_output=True,
                 text=True,
                 timeout=120,

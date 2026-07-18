@@ -1,10 +1,9 @@
-import os
 from pathlib import Path
 
 import pytest
 import yaml
 
-from project_vitae.config import Config, SubagentConfig, load_config
+from project_vitae.config import load_config
 from project_vitae.models import ConfigError
 
 
@@ -18,11 +17,36 @@ def _write_config(path: Path, data: dict) -> Path:
 def _minimal_config() -> dict:
     return {
         "subagents": {
-            "explore": {"provider": "anthropic", "api_key_env": "TEST_KEY", "model": "claude-sonnet-4-20250514", "prompt_version": "prompts/explore/v1.md"},
-            "filter": {"provider": "anthropic", "api_key_env": "TEST_KEY", "model": "claude-sonnet-4-20250514", "prompt_version": "prompts/filter/v1.md"},
-            "writing": {"provider": "openai_compatible", "api_key_env": "TEST_KEY", "model": "gpt-4o", "prompt_version": "prompts/writing/v1.md"},
-            "content_critique": {"provider": "anthropic", "api_key_env": "TEST_KEY", "model": "claude-sonnet-4-20250514", "prompt_version": "prompts/content_critique/v1.md"},
-            "compile_critique": {"provider": "anthropic", "api_key_env": "TEST_KEY", "model": "claude-sonnet-4-20250514", "prompt_version": "prompts/compile_critique/v1.md"},
+            "explore": {
+                "provider": "anthropic",
+                "api_key_env": "TEST_KEY",
+                "model": "claude-sonnet-4-20250514",
+                "prompt_version": "prompts/explore/v1.md",
+            },
+            "filter": {
+                "provider": "anthropic",
+                "api_key_env": "TEST_KEY",
+                "model": "claude-sonnet-4-20250514",
+                "prompt_version": "prompts/filter/v1.md",
+            },
+            "writing": {
+                "provider": "openai_compatible",
+                "api_key_env": "TEST_KEY",
+                "model": "gpt-4o",
+                "prompt_version": "prompts/writing/v1.md",
+            },
+            "content_critique": {
+                "provider": "anthropic",
+                "api_key_env": "TEST_KEY",
+                "model": "claude-sonnet-4-20250514",
+                "prompt_version": "prompts/content_critique/v1.md",
+            },
+            "compile_critique": {
+                "provider": "anthropic",
+                "api_key_env": "TEST_KEY",
+                "model": "claude-sonnet-4-20250514",
+                "prompt_version": "prompts/compile_critique/v1.md",
+            },
         },
     }
 
@@ -60,7 +84,12 @@ def test_missing_subagent_section(tmp_path: Path, monkeypatch):
 def test_unknown_subagent_section(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("TEST_KEY", "sk-xxx")
     data = _minimal_config()
-    data["subagents"]["extra"] = {"provider": "anthropic", "api_key_env": "TEST_KEY", "model": "x", "prompt_version": "v1"}
+    data["subagents"]["extra"] = {
+        "provider": "anthropic",
+        "api_key_env": "TEST_KEY",
+        "model": "x",
+        "prompt_version": "v1",
+    }
     cfg_path = _write_config(tmp_path / "config.yaml", data)
     with pytest.raises(ConfigError, match="unknown subagent"):
         load_config(cfg_path)

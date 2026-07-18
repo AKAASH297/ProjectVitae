@@ -3,7 +3,6 @@ from pathlib import Path
 import pytest
 
 from project_vitae.latex_utils import (
-    REQUIRED_PLACEHOLDERS,
     compile_pdf,
     detect_compiler,
     extract_placeholders,
@@ -66,7 +65,12 @@ def test_validate_placeholders_missing():
 
 def test_fill_template_basic():
     template = r"\VAR{experience}\VAR{education}\VAR{skills}\VAR{summary}"
-    sections = {"experience": "Worked at X", "education": "MIT", "skills": "Python", "summary": "Summary"}
+    sections = {
+        "experience": "Worked at X",
+        "education": "MIT",
+        "skills": "Python",
+        "summary": "Summary",
+    }
     result = fill_template(template, sections)
     assert "Worked at X" in result
     assert "MIT" in result

@@ -17,13 +17,24 @@ from project_vitae.models import (
 
 
 def test_project_record_defaults():
-    r = ProjectRecord(title="My Project", summary="A summary", tags=["python"], source_repo="https://github.com/user/repo")
+    r = ProjectRecord(
+        title="My Project",
+        summary="A summary",
+        tags=["python"],
+        source_repo="https://github.com/user/repo",
+    )
     assert r.low_confidence is False
     assert r.title == "My Project"
 
 
 def test_project_record_round_trip():
-    r = ProjectRecord(title="T", summary="S", tags=["a"], source_repo="https://github.com/u/r", low_confidence=True)
+    r = ProjectRecord(
+        title="T",
+        summary="S",
+        tags=["a"],
+        source_repo="https://github.com/u/r",
+        low_confidence=True,
+    )
     d = r.model_dump()
     r2 = ProjectRecord.model_validate(d)
     assert r2 == r
@@ -84,7 +95,13 @@ def test_resume_section_status_transitions():
 
 
 def test_issue():
-    i = Issue(location="exp1", kind="content_keyword", note="missing term", keyword_match=False, phase="content")
+    i = Issue(
+        location="exp1",
+        kind="content_keyword",
+        note="missing term",
+        keyword_match=False,
+        phase="content",
+    )
     assert i.keyword_match is False
     assert i.phase == "content"
 
@@ -95,7 +112,11 @@ def test_issue_defaults():
 
 
 def test_critique_result():
-    issues = [Issue(location="exp1", kind="content_keyword", note="x", keyword_match=True, phase="content")]
+    issues = [
+        Issue(
+            location="exp1", kind="content_keyword", note="x", keyword_match=True, phase="content"
+        )
+    ]
     r = CritiqueResult(issues=issues)
     assert len(r.issues) == 1
 

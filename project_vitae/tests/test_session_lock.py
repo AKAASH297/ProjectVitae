@@ -1,5 +1,4 @@
 import json
-import time
 from pathlib import Path
 
 import pytest
@@ -44,7 +43,6 @@ def test_force_bypasses_lock(tmp_path: Path):
 
 
 def test_stale_lock_acquireable(tmp_path: Path):
-    old_time = time.time() - 4000
     lock_path = tmp_path / ".lock"
     data = {"pid": 999999, "started_at": "2000-01-01T00:00:00+00:00"}
     lock_path.write_text(json.dumps(data))
@@ -66,7 +64,6 @@ def test_acquire_for_resume(tmp_path: Path):
 
 
 def test_list_resumable_sessions(tmp_path: Path):
-    from project_vitae.session_lock import list_resumable_sessions
     s1 = tmp_path / "sessions" / "s1"
     s1.mkdir(parents=True)
     (s1 / ".lock").write_text("{}")

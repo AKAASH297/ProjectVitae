@@ -1,8 +1,7 @@
+from langgraph.types import Command
 from textual import on
 from textual.screen import Screen
-from textual.widgets import Button, Header, Label, ListView, Static
-
-from langgraph.types import Command
+from textual.widgets import Button, Header, Label, Static
 
 
 class FilterScreen(Screen):
@@ -21,6 +20,7 @@ class FilterScreen(Screen):
     @on(Button.Pressed, "#confirm")
     def on_confirm(self):
         from project_vitae.graph import resume_graph
+
         self.app.graph_iterator = resume_graph(
             self.app.graph,
             Command(resume={"action": "confirm", "selected": self.payload.get("selected", [])}),

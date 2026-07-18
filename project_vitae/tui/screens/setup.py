@@ -1,10 +1,7 @@
-from pathlib import Path
-
 from textual import on
 from textual.screen import Screen
 from textual.widgets import Button, Header, Input, Label, ListItem, ListView, Static, TextArea
 
-from project_vitae.io_utils import USERPROFILE_DIR
 from project_vitae.session_lock import list_resumable_sessions
 
 

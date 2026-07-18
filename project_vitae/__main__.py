@@ -1,12 +1,12 @@
 import logging
-import sys
 from pathlib import Path
 
 import typer
+from langgraph.types import Command
 from rich.console import Console
 
 from project_vitae.config import load_config
-from project_vitae.graph import build_graph, iter_graph, resume_graph
+from project_vitae.graph import build_graph
 from project_vitae.io_utils import USERPROFILE_DIR, slugify
 from project_vitae.models import SessionState
 from project_vitae.session_lock import SessionLock
@@ -19,7 +19,9 @@ logger = logging.getLogger(__name__)
 @app.command()
 def run(
     urls: list[str] = typer.Argument(..., help="GitHub repository URLs"),
-    jd: Path = typer.Option(..., "--jd", "-j", help="Path to job description markdown file", exists=True, readable=True),
+    jd: Path = typer.Option(
+        ..., "--jd", "-j", help="Path to job description markdown file", exists=True, readable=True
+    ),
     session: str = typer.Option("default", "--session", "-s", help="Session name"),
     config: Path | None = typer.Option(None, "--config", "-c", help="Path to config file"),
     force: bool = typer.Option(False, "--force", "-f", help="Force acquire session lock"),
@@ -53,16 +55,75 @@ def run(
             job_description=jd_text,
         )
 
-        handler = _HeadlessHandler()
-        for event in iter_graph(graph, initial_state.model_dump(), thread_id=session):
-            handler.handle(event)
+        thread_config = {"configurable": {"thread_id": session}}
 
-        console.print(f"[green]Done.[/green] Final PDF: {handler.final_pdf or 'N/A'}")
+        final_pdf = _run_headless(graph, initial_state.model_dump(), thread_config)
+        console.print(f"[green]Done.[/green] Final PDF: {final_pdf or 'N/A'}")
     except Exception as e:
         console.print(f"[red]Pipeline failed:[/red] {e}")
         raise typer.Exit(1)
     finally:
         lock.release()
+
+
+def _run_headless(graph, initial_state: dict, config: dict) -> str | None:
+    final_pdf: str | None = None
+
+    def _collect_events(stream):
+        nonlocal final_pdf
+        for event in stream:
+            for node_name, output in event.items():
+                if isinstance(output, dict):
+                    if "final_pdf" in output and output["final_pdf"]:
+                        final_pdf = output["final_pdf"]
+
+    _collect_events(graph.stream(initial_state, config, stream_mode="updates"))
+
+    while True:
+        state_snapshot = graph.get_state(config)
+        next_nodes = state_snapshot.next
+        if not next_nodes:
+            break
+
+        tasks = state_snapshot.tasks
+        resume_value = _resolve_interrupt(tasks)
+
+        _collect_events(graph.stream(Command(resume=resume_value), config, stream_mode="updates"))
+
+    return final_pdf
+
+
+def _resolve_interrupt(tasks) -> dict:
+    for task in tasks:
+        interrupts = getattr(task, "interrupts", None)
+        if not interrupts:
+            continue
+        payload = interrupts[0]
+        if hasattr(payload, "value"):
+            payload = payload.value
+        ptype = payload.get("type") if isinstance(payload, dict) else ""
+
+        if ptype == "filter_confirm":
+            selected = payload.get("selected", [])
+            console.print(
+                f"[yellow]Filter:[/yellow] {', '.join(selected) if selected else '(none)'}"
+            )
+            return {"action": "confirm", "selected": selected}
+
+        elif ptype == "review":
+            console.print("[yellow]Review: auto-approving all sections[/yellow]")
+            approved_ids = [s["id"] for s in payload.get("sections", [])]
+            return {"action": "proceed", "approved_ids": approved_ids}
+
+        elif ptype == "compile_critique":
+            console.print("[yellow]Compile critique: dismissing[/yellow]")
+            return {"action": "dismiss"}
+
+        else:
+            console.print(f"[yellow]Unknown interrupt: {ptype}, dismissing[/yellow]")
+            return {}
+
+    return {}
 
 
 @app.command()
@@ -73,6 +134,7 @@ def setup(
     config: Path | None = typer.Option(None, "--config", "-c", help="Path to config file"),
 ):
     from project_vitae.tui.app import ProjectVitaeApp
+
     app_tui = ProjectVitaeApp(session_name=session)
     app_tui.run()
 
@@ -106,41 +168,19 @@ def resume(
         state_file = session_dir / "resume_state.json"
         if state_file.is_file():
             import json
+
             state = SessionState.model_validate(json.loads(state_file.read_text()))
         else:
             state = SessionState(session_name=session_name)
 
-        handler = _HeadlessHandler(headless=False)
-        for event in iter_graph(graph, state.model_dump(), thread_id=session_name):
-            handler.handle(event)
-        console.print(f"[green]Resume complete.[/green]")
+        thread_config = {"configurable": {"thread_id": session_name}}
+        final_pdf = _run_headless(graph, state.model_dump(), thread_config)
+        console.print(f"[green]Resume complete.[/green] Final PDF: {final_pdf or 'N/A'}")
     except Exception as e:
         console.print(f"[red]Resume failed:[/red] {e}")
         raise typer.Exit(1)
     finally:
         lock.release()
-
-
-class _HeadlessHandler:
-    def __init__(self, headless: bool = True):
-        self.headless = headless
-        self.final_pdf: str | None = None
-
-    def handle(self, event: dict) -> None:
-        for node_name, output in event.items():
-            if isinstance(output, dict):
-                if "final_pdf" in output and output["final_pdf"]:
-                    self.final_pdf = output["final_pdf"]
-                if output.get("type") == "filter_confirm":
-                    console.print(f"[yellow]Filter proposal:[/yellow] {', '.join(output.get('selected', []))}")
-                    if self.headless:
-                        output["action"] = "confirm"
-                elif output.get("type") == "review":
-                    console.print("[yellow]Review interrupted (auto-approving in headless mode)[/yellow]")
-                elif output.get("type") == "compile_critique":
-                    console.print("[yellow]Compile critique (dismissing in headless mode)[/yellow]")
-                    if self.headless:
-                        output["action"] = "dismiss"
 
 
 if __name__ == "__main__":

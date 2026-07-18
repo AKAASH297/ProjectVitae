@@ -1,8 +1,5 @@
 from datetime import datetime, timezone
-from pathlib import Path
 from unittest.mock import MagicMock
-
-import pytest
 
 from project_vitae.models import ResumeSection, SectionVersion, SessionState, WritingResult
 from project_vitae.nodes.writing import make_writing
@@ -38,8 +35,6 @@ def test_writing_creates_section(tmp_path, monkeypatch):
     cfg.retry.max_attempts = 3
     cfg.cost.pricing_overrides = {}
 
-    from project_vitae.nodes.writing import LLMCall
-
     def fake_invoke(self, messages, prompt_override=None):
         fake_result = MagicMock()
         fake_result.output = WritingResult(
@@ -52,12 +47,14 @@ def test_writing_creates_section(tmp_path, monkeypatch):
 
     with monkeypatch.context() as m:
         m.setattr("project_vitae.nodes.writing.LLMCall.invoke", fake_invoke)
-        result = make_writing(cfg, "skills")(SessionState(
-            session_name="test",
-            job_description="Python developer",
-            selected_projects=[],
-            generated_sections_cache={},
-        ))
+        result = make_writing(cfg, "skills")(
+            SessionState(
+                session_name="test",
+                job_description="Python developer",
+                selected_projects=[],
+                generated_sections_cache={},
+            )
+        )
 
     assert len(result["sections"]) == 1
     assert result["sections"][0].kind == "skills"
@@ -80,8 +77,6 @@ def test_writing_appends_version(tmp_path, monkeypatch):
     cfg.retry.max_attempts = 3
     cfg.cost.pricing_overrides = {}
     state = _make_state("experience")
-
-    from project_vitae.nodes.writing import LLMCall
 
     def fake_invoke(self, messages, prompt_override=None):
         fake_result = MagicMock()

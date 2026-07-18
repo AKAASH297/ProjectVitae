@@ -1,20 +1,12 @@
 from datetime import datetime, timezone
-from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 
-from project_vitae.config import Config
-from project_vitae.io_utils import USERPROFILE_DIR
 from project_vitae.latex_utils import fill_template
 from project_vitae.models import (
-    ExplorationResult,
-    FilterResult,
-    Issue,
     ResumeSection,
     SectionVersion,
     SessionState,
-    WritingResult,
 )
 
 pytestmark = pytest.mark.network
@@ -22,6 +14,7 @@ pytestmark = pytest.mark.network
 
 def test_deterministic_keyword_overlap():
     from project_vitae.nodes.content_critique import _keyword_overlap
+
     jd = "Python developer with Kubernetes and Docker experience"
     text = "Worked on Python projects"
     issues = _keyword_overlap(jd, text)
@@ -34,6 +27,7 @@ def test_deterministic_keyword_overlap():
 
 def test_latex_sanitizer():
     from project_vitae.latex_utils import sanitize_latex
+
     cases = [
         ("", ""),
         ("a & b", "a \\& b"),
@@ -58,6 +52,7 @@ def test_placeholder_extraction():
 
 def test_placeholder_validation_missing():
     from project_vitae.latex_utils import validate_template_placeholders
+
     missing, unknown = validate_template_placeholders(r"\VAR{experience}")
     assert "education" in missing
     assert "summary" in missing
@@ -65,7 +60,9 @@ def test_placeholder_validation_missing():
 
 def test_fill_template_passthrough():
     tpl = r"\VAR{experience}\VAR{education}\VAR{skills}\VAR{summary}\VAR{custom}"
-    result = fill_template(tpl, {"experience": "Worked", "education": "Edu", "skills": "Skills", "summary": "Sum"})
+    result = fill_template(
+        tpl, {"experience": "Worked", "education": "Edu", "skills": "Skills", "summary": "Sum"}
+    )
     assert "Worked" in result
     assert r"\VAR{custom}" in result
 
@@ -88,17 +85,44 @@ def test_session_state_round_trip():
 
 
 def test_config_yaml_format(tmp_path):
-    from project_vitae.config import load_config
-    import yaml
     import os
+
+    import yaml
+
+    from project_vitae.config import load_config
 
     cfg_data = {
         "subagents": {
-            "explore": {"provider": "anthropic", "api_key_env": "TEST_API_KEY", "model": "c", "prompt_version": "v1"},
-            "filter": {"provider": "anthropic", "api_key_env": "TEST_API_KEY", "model": "c", "prompt_version": "v1"},
-            "writing": {"provider": "anthropic", "api_key_env": "TEST_API_KEY", "model": "c", "prompt_version": "v1"},
-            "content_critique": {"provider": "anthropic", "api_key_env": "TEST_API_KEY", "model": "c", "prompt_version": "v1"},
-            "compile_critique": {"provider": "anthropic", "api_key_env": "TEST_API_KEY", "model": "c", "prompt_version": "v1"},
+            "explore": {
+                "provider": "anthropic",
+                "api_key_env": "TEST_API_KEY",
+                "model": "c",
+                "prompt_version": "v1",
+            },
+            "filter": {
+                "provider": "anthropic",
+                "api_key_env": "TEST_API_KEY",
+                "model": "c",
+                "prompt_version": "v1",
+            },
+            "writing": {
+                "provider": "anthropic",
+                "api_key_env": "TEST_API_KEY",
+                "model": "c",
+                "prompt_version": "v1",
+            },
+            "content_critique": {
+                "provider": "anthropic",
+                "api_key_env": "TEST_API_KEY",
+                "model": "c",
+                "prompt_version": "v1",
+            },
+            "compile_critique": {
+                "provider": "anthropic",
+                "api_key_env": "TEST_API_KEY",
+                "model": "c",
+                "prompt_version": "v1",
+            },
         },
     }
     p = tmp_path / "config.yaml"

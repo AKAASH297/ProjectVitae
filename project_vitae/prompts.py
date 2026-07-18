@@ -2,7 +2,7 @@ import logging
 from pathlib import Path
 
 from project_vitae.config import SubagentConfig
-from project_vitae.io_utils import USERPROFILE_DIR, userprofile_path
+from project_vitae.io_utils import userprofile_path
 from project_vitae.models import PromptError
 
 logger = logging.getLogger(__name__)

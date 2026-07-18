@@ -1,17 +1,13 @@
 import os
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-import yaml
 
 # Ensure USERPROFILE_DIR resolves to a sensible default during tests
 # so modules that import it at load time get a valid path.
 os.environ.setdefault("PROJECTVITAE_USERPROFILE", str(Path.cwd() / "userprofile"))
-
-from project_vitae.config import Config, SubagentConfig
 
 
 @pytest.fixture

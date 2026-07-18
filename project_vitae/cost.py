@@ -1,5 +1,4 @@
 import logging
-from typing import Any
 
 from project_vitae.models import CostCapReached
 
@@ -47,7 +46,9 @@ class CostGuard:
         if usd > 0:
             self._total += usd
             if was_llm and self._total > self._cap:
-                raise CostCapReached(f"cost cap of ${self._cap:.2f} exceeded (total: ${self._total:.2f})")
+                raise CostCapReached(
+                    f"cost cap of ${self._cap:.2f} exceeded (total: ${self._total:.2f})"
+                )
 
     @property
     def current(self) -> float:

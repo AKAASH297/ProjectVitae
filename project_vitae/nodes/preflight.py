@@ -12,9 +12,16 @@ logger = logging.getLogger(__name__)
 def make_preflight(cfg: Config):
     def preflight(state: SessionState) -> dict:
         for name in cfg.subagents:
-            env_var = cfg.subagent(name).api_key_env
-            if not os.environ.get(env_var):
-                raise ConfigError(f"environment variable '{env_var}' not set for subagent '{name}'")
+            subagent = cfg.subagent(name)
+            if not subagent.api_key and not (
+                subagent.api_key_env and os.environ.get(subagent.api_key_env)
+            ):
+                source = (
+                    f"environment variable '{subagent.api_key_env}'"
+                    if subagent.api_key_env
+                    else "API key"
+                )
+                raise ConfigError(f"{source} not set for subagent '{name}'")
 
         template_rel = cfg.latex.template_path
         template_path = userprofile_path([template_rel])
@@ -27,18 +34,21 @@ def make_preflight(cfg: Config):
         text = template_path.read_text(encoding="utf-8")
         missing, unknown = validate_template_placeholders(text)
         if missing:
-            raise TemplateError(f"missing required placeholders in template: {', '.join(sorted(missing))}")
+            raise TemplateError(
+                f"missing required placeholders in template: {', '.join(sorted(missing))}"
+            )
         if unknown:
             logger.warning("unknown placeholders in template (will pass through): %s", unknown)
 
         compiler = cfg.latex.compiler
-        if compiler == "auto":
-            compiler = detect_compiler()
-        else:
-            try:
+        try:
+            if compiler == "auto":
+                compiler = detect_compiler()
+            else:
                 detect_compiler()
-            except TemplateError:
-                raise TemplateError(f"specified compiler '{compiler}' not found on PATH")
+        except TemplateError:
+            logger.warning("no LaTeX compiler found on PATH — PDF export will fail at compile step")
+            compiler = None
 
         return {"latex_compiler": compiler}
 
