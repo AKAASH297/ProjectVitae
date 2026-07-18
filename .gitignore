@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Project-specific - cloned repos (ephemeral build artifacts)
+userprofile/clones/
+
+# Project-specific - compiled PDFs / aux LaTeX files
+userprofile/sessions/*/output/
+
+# Project-specific - SQLite checkpointer database (contains JD text and section content)
+userprofile/sessions.db
+
+# Project-specific - session state files (contains JD and section content)
+userprofile/sessions/*/resume_state.json
+userprofile/sessions/*/job_description.md
+
+# Project-specific - PII
+userprofile/userinfo.md
+
+# LaTeX auxiliary files
+*.aux
+*.log
+*.out
+*.toc
+*.lof
+*.lot
+*.bbl
+*.blg
+*.fls
+*.fdb_latexmk
+
+# OS files
+Thumbs.db
+.DS_Store
